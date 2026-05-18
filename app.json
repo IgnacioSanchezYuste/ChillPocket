@@ -2,7 +2,7 @@
   "expo": {
     "name": "Finanzas",
     "slug": "Finanzas",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -21,10 +21,20 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.Finanzas"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "971577e2-999b-435f-82ad-68ed12aa4400"
+      }
+    },
+    "owner": "nacho_06",
+    "plugins": [
+      "expo-font"
+    ]
   }
 }
