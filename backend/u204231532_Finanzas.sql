@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Servidor: 127.0.0.1:3306
--- Tiempo de generación: 18-05-2026 a las 07:00:02
+-- Tiempo de generación: 18-05-2026 a las 08:33:16
 -- Versión del servidor: 11.8.6-MariaDB-log
 -- Versión de PHP: 7.2.34
 
@@ -33,6 +33,7 @@ CREATE TABLE `budgets` (
   `category_id` int(11) DEFAULT NULL,
   `amount` decimal(12,2) NOT NULL CHECK (`amount` >= 0),
   `month_year` char(7) NOT NULL,
+  `reset_day` tinyint(2) NOT NULL DEFAULT 1,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -97,17 +98,6 @@ CREATE TABLE `recurring_expenses` (
 -- Volcado de datos para la tabla `recurring_expenses`
 --
 
-INSERT INTO `recurring_expenses` (`id`, `user_id`, `category_id`, `name`, `amount`, `type`, `frequency`, `start_date`, `end_date`, `is_active`, `notes`, `created_at`, `updated_at`) VALUES
-(1, 1, 42, 'Spotify', 3.50, 'expense', 'monthly', '2026-05-04', NULL, 1, NULL, '2026-05-04 08:39:20', '2026-05-08 09:34:22'),
-(2, 1, 42, 'Netflix', 8.00, 'expense', 'monthly', '2026-05-04', NULL, 1, NULL, '2026-05-04 08:56:35', '2026-05-08 09:34:22'),
-(3, 1, 39, 'Alquiler', 270.00, 'expense', 'monthly', '2026-05-04', NULL, 1, NULL, '2026-05-04 08:56:51', '2026-05-08 09:34:22'),
-(4, 1, NULL, 'Inversión', 600.00, 'expense', 'monthly', '2026-05-04', NULL, 1, NULL, '2026-05-04 12:08:00', '2026-05-04 12:08:00'),
-(5, 1, 45, 'Salario', 1300.00, 'income', 'monthly', '2026-05-04', NULL, 1, NULL, '2026-05-04 12:09:25', '2026-05-08 09:34:22'),
-(6, 4, 39, 'Alquiler', 300.00, 'expense', 'monthly', '2026-05-08', NULL, 1, NULL, '2026-05-08 19:55:10', '2026-05-08 19:55:10'),
-(7, 4, 45, 'Nómina', 1400.00, 'income', 'monthly', '2026-05-08', NULL, 1, NULL, '2026-05-08 19:55:54', '2026-05-08 19:55:54'),
-(8, 3, 45, 'Salario', 1105.00, 'income', 'monthly', '2026-05-18', NULL, 1, NULL, '2026-05-18 06:37:02', '2026-05-18 06:37:02'),
-(9, 3, 42, 'Claude Pro', 18.00, 'expense', 'monthly', '2026-05-18', NULL, 1, NULL, '2026-05-18 06:38:19', '2026-05-18 06:38:19'),
-(10, 3, 42, 'Netflix', 6.99, 'expense', 'monthly', '2026-05-18', NULL, 1, NULL, '2026-05-18 06:44:30', '2026-05-18 06:44:30');
 
 -- --------------------------------------------------------
 
@@ -134,10 +124,7 @@ CREATE TABLE `savings_goals` (
 -- Volcado de datos para la tabla `savings_goals`
 --
 
-INSERT INTO `savings_goals` (`id`, `user_id`, `name`, `target_amount`, `current_amount`, `target_date`, `description`, `color`, `icon`, `is_completed`, `created_at`, `updated_at`) VALUES
-(1, 1, 'Coche', 5000.00, 0.00, NULL, NULL, '#10B981', NULL, 0, '2026-05-04 08:39:59', '2026-05-04 08:39:59'),
-(2, 3, 'coche', 3000.00, 100.00, NULL, NULL, '#10B981', NULL, 0, '2026-05-08 09:40:44', '2026-05-08 09:40:59'),
-(3, 4, 'coche', 15000.00, 150.00, NULL, NULL, '#10B981', NULL, 0, '2026-05-08 19:56:11', '2026-05-08 19:57:24');
+
 
 -- --------------------------------------------------------
 
@@ -154,6 +141,8 @@ CREATE TABLE `transactions` (
   `type` enum('expense','income') NOT NULL,
   `transaction_date` date NOT NULL,
   `notes` text DEFAULT NULL,
+  `payment_method` varchar(20) DEFAULT NULL,
+  `recurring_id` int(11) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -162,14 +151,7 @@ CREATE TABLE `transactions` (
 -- Volcado de datos para la tabla `transactions`
 --
 
-INSERT INTO `transactions` (`id`, `user_id`, `category_id`, `amount`, `description`, `type`, `transaction_date`, `notes`, `created_at`, `updated_at`) VALUES
-(1, 1, 37, 0.50, 'pan', 'expense', '2026-05-04', NULL, '2026-05-04 08:40:19', '2026-05-08 09:34:22'),
-(2, 1, NULL, 1300.00, 'salario', 'income', '2026-05-04', NULL, '2026-05-04 08:41:11', '2026-05-04 08:41:11'),
-(4, 4, 37, 0.50, 'Pan', 'expense', '2026-05-08', NULL, '2026-05-08 19:53:52', '2026-05-08 19:53:52'),
-(5, 4, 37, 300.00, 'la compra de el mes', 'expense', '2026-05-08', NULL, '2026-05-08 20:00:08', '2026-05-08 20:00:08'),
-(6, 3, 37, 0.50, 'prueba', 'expense', '2026-05-18', NULL, '2026-05-18 06:55:27', '2026-05-18 06:55:27'),
-(7, 3, 43, 0.50, 'prueba', 'expense', '2026-05-18', NULL, '2026-05-18 06:55:39', '2026-05-18 06:55:39'),
-(8, 3, 40, 0.50, 'Ocio', 'expense', '2026-05-18', NULL, '2026-05-18 06:56:11', '2026-05-18 06:56:11');
+
 
 -- --------------------------------------------------------
 
@@ -194,11 +176,7 @@ CREATE TABLE `users` (
 -- Volcado de datos para la tabla `users`
 --
 
-INSERT INTO `users` (`id`, `name`, `email`, `password_hash`, `currency`, `timezone`, `avatar_url`, `theme`, `created_at`, `updated_at`) VALUES
-(1, 'Prueba', 'prueba@prueba.es', '$2y$10$d7h9qOl8RyuEXiU95ijvBOwy.XzwG5xODXRO972..ppXft5Es3uzy', 'EUR', 'Europe/Madrid', NULL, 'system', '2026-05-04 08:38:09', '2026-05-04 08:38:09'),
-(2, 'prueba2', 'prueba2@prueba2.es', '$2y$10$PrxNNPbQVvKLS8rQkjacjOvl8RUmX5/t3PGBh7tEmy9/jgejUQpKW', 'USD', 'Europe/Madrid', NULL, 'system', '2026-05-04 10:14:15', '2026-05-04 10:30:18'),
-(3, 'Ignacio', 'nachonsen@gmail.com', '$2y$10$0lKIpSRCcWeNFqISS1D3TeMV/1JKkFhyef7Ir6Zi5GkvR42UeSVV.', 'EUR', 'Europe/Madrid', NULL, 'system', '2026-05-08 09:00:24', '2026-05-08 09:00:24'),
-(4, 'Lourdes', 'prueba@pu.pu', '$2y$10$0WpMSeR4AhME5MEj6/V3CeIzUxfokMI.Db.e18qum1Qi6ebt529ji', 'EUR', 'Europe/Madrid', NULL, 'system', '2026-05-08 19:53:22', '2026-05-08 19:53:22');
+
 
 --
 -- Índices para tablas volcadas
@@ -244,9 +222,11 @@ ALTER TABLE `savings_goals`
 --
 ALTER TABLE `transactions`
   ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_user_recurring_date` (`user_id`,`recurring_id`,`transaction_date`),
   ADD KEY `idx_user_date` (`user_id`,`transaction_date`),
   ADD KEY `idx_user_type` (`user_id`,`type`),
-  ADD KEY `idx_category` (`category_id`);
+  ADD KEY `idx_category` (`category_id`),
+  ADD KEY `idx_recurring` (`recurring_id`);
 
 --
 -- Indices de la tabla `users`
@@ -331,7 +311,8 @@ ALTER TABLE `savings_goals`
 --
 ALTER TABLE `transactions`
   ADD CONSTRAINT `transactions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  ADD CONSTRAINT `transactions_ibfk_2` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`) ON DELETE SET NULL;
+  ADD CONSTRAINT `transactions_ibfk_2` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`) ON DELETE SET NULL,
+  ADD CONSTRAINT `transactions_ibfk_3` FOREIGN KEY (`recurring_id`) REFERENCES `recurring_expenses` (`id`) ON DELETE SET NULL;
 COMMIT;
 
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;

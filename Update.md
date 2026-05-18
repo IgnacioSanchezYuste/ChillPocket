@@ -4,5 +4,6 @@ También quiero que se pueda añadir presupuestos de gasto por categoría, estab
 
 Para hacer todo esto revisa también el backend, que es muy importante también que toda la lógica se controle ahí para no cargar la UI de la app, y si la api o bdd necesita hacer algo que no hace o tiene añadelo también, sobre todo que sea una buena estructura y que esté pensado para poder seguir metiendo nuevas actualizaciones y funcionalidades.
 
+También quiero que pongas como logo para la app nativa y web los iconos en assets Wallet-solid tanto el svg como png dependiendo de cual venga mejor en cada caso, puedes implementarlos en algunos sitios dentro de la app para añadir más personalidad a la app.
 
-Cuando termines de hacer todo esto, dentro de el archivo Cambios.txt haz un brebe resumen de lo introducido con este formato: [FECHA]:AUTOR Resumen....
+Cuando termines de hacer todo esto, dentro de el archivo Cambios.txt haz un brebe resumen de lo introducido con este formato: Versión(1.0.0)[FECHA]:AUTOR: Resumen....
