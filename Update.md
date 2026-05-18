@@ -1,0 +1,8 @@
+Quiero que cuando llegue el día de la fecha de un gasto recurrente (Subscripciones, alquiler...) para ver los gastos mejor, que se genere una transacción de ese gasto fijo, y que aparezca como tal en la pantalla de analíticas, además en dicha pantalla debes de mejorar la UI y añadir más estadísticas útiles y visuales, grafico de barras de gastos comparados con otro meses, y cosas así. Busca fallos tanto de UI como de cálculo.
+Añade típo de pago al añadir una transacción, por targeta de débito, crédito, efectivo, bizum, transferencia y las comunes si es que me dejo alguna.
+También quiero que se pueda añadir presupuestos de gasto por categoría, establecer límites mensuales y cuando se reinician para cada categoría, y en Analítica en vez de que la barra progresiva enseñe el porcentaje de gasto respecto al total gastado, que marque el porcentaje gastado según el límite puesto por el usuario.
+
+Para hacer todo esto revisa también el backend, que es muy importante también que toda la lógica se controle ahí para no cargar la UI de la app, y si la api o bdd necesita hacer algo que no hace o tiene añadelo también, sobre todo que sea una buena estructura y que esté pensado para poder seguir metiendo nuevas actualizaciones y funcionalidades.
+
+
+Cuando termines de hacer todo esto, dentro de el archivo Cambios.txt haz un brebe resumen de lo introducido con este formato: [FECHA]:AUTOR Resumen....
