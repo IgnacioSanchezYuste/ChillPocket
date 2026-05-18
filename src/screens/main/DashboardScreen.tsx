@@ -14,6 +14,7 @@ import { KPICard } from '../../components/KPICard';
 import { TransactionRow } from '../../components/TransactionRow';
 import { FAB } from '../../components/FAB';
 import { ScreenHeader } from '../../components/ScreenHeader';
+import { BrandLogo } from '../../components/BrandLogo';
 import { TransactionSheet } from '../modals/TransactionSheet';
 import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
 import type { Transaction } from '../../api/types';
@@ -63,6 +64,7 @@ export const DashboardScreen: React.FC = () => {
         <ScreenHeader
           title={`Hola, ${user?.name?.split(' ')[0] || ''}`}
           subtitle={monthLabel(summary?.month_year || currentMonthYear())}
+          right={<BrandLogo size={40} />}
         />
 
         <View style={{ paddingHorizontal: spacing.lg }}>

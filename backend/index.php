@@ -16,25 +16,33 @@ require __DIR__ . "/Conexion.php";
 // ================= CONFIG =================
 define('JWT_SECRET', getenv('JWT_SECRET') ?: 'cambia_este_secreto_en_produccion');
 define('JWT_EXPIRATION', 3600);
+define('ALLOWED_METHODS', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+define('ALLOWED_HEADERS', 'Authorization, Content-Type, Accept, Origin, X-Requested-With');
+
+// ================= EARLY CORS (preflight short-circuit) =================
+// Si el navegador hace preflight OPTIONS lo respondemos antes de cargar
+// el router de Slim para evitar problemas con mod_security / proxys.
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: ' . ALLOWED_METHODS);
+    header('Access-Control-Allow-Headers: ' . ALLOWED_HEADERS);
+    header('Access-Control-Max-Age: 86400');
+    http_response_code(204);
+    exit;
+}
 
 $app = AppFactory::create();
 $app->setBasePath('/API_Finanzas');
 $app->addBodyParsingMiddleware();
 $app->addRoutingMiddleware();
 
-// ================= CORS =================
-$app->options('/{routes:.+}', function (Request $request, Response $response) {
-    return $response
-        ->withHeader('Access-Control-Allow-Origin', '*')
-        ->withHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, Origin, X-Requested-With')
-        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-});
+// ================= CORS (post-routing, para respuestas normales) =================
 $app->add(function (Request $request, RequestHandlerInterface $handler) {
     $response = $handler->handle($request);
     return $response
         ->withHeader('Access-Control-Allow-Origin', '*')
-        ->withHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, Origin, X-Requested-With')
-        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+        ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
+        ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS);
 });
 
 // ================= DB =================
@@ -90,8 +98,11 @@ function validMonthYear(?string $value): bool {
     return is_string($value) && preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', $value) === 1;
 }
 
-// Comprueba que una categoría es accesible por el usuario:
-// pertenece al user_id o es global (user_id IS NULL).
+function validPaymentMethod(?string $method): bool {
+    if ($method === null || $method === '') return true;
+    return in_array($method, ['cash','debit_card','credit_card','bizum','transfer','other'], true);
+}
+
 function userCanUseCategory(PDO $conn, int $userId, int $categoryId): bool {
     $stmt = $conn->prepare("
         SELECT id FROM categories
@@ -102,8 +113,6 @@ function userCanUseCategory(PDO $conn, int $userId, int $categoryId): bool {
     return (bool)$stmt->fetch();
 }
 
-// Comprueba que una categoría es propiedad del usuario (no global).
-// Solo las propias se pueden editar/eliminar.
 function userOwnsCategory(PDO $conn, int $userId, int $categoryId): bool {
     $stmt = $conn->prepare("
         SELECT id FROM categories
@@ -114,7 +123,6 @@ function userOwnsCategory(PDO $conn, int $userId, int $categoryId): bool {
     return (bool)$stmt->fetch();
 }
 
-// Calcula el coste mensual proyectado de un gasto recurrente.
 function monthlyEquivalent(float $amount, string $frequency): float {
     return match ($frequency) {
         'weekly'  => $amount * 4.345,
@@ -124,14 +132,108 @@ function monthlyEquivalent(float $amount, string $frequency): float {
     };
 }
 
+// =====================================================
+// GENERADOR DE TRANSACCIONES DE GASTOS/INGRESOS FIJOS
+// =====================================================
+// Llamado de forma "lazy" en cada petición protegida.
+// Para cada recurrente activo del usuario, genera transacciones
+// para cada fecha que toque desde la última generada (o desde
+// start_date) hasta hoy, respetando end_date.
+// El UNIQUE (user_id, recurring_id, transaction_date) protege
+// frente a duplicados aunque haya carreras.
+function expandRecurringTransactions(PDO $conn, int $userId): void {
+    $today = new DateTimeImmutable('today');
+
+    $stmt = $conn->prepare("
+        SELECT r.id, r.category_id, r.name, r.amount, r.type,
+               r.frequency, r.start_date, r.end_date,
+               (SELECT MAX(t.transaction_date) FROM transactions t
+                 WHERE t.recurring_id = r.id AND t.user_id = r.user_id) AS last_date
+        FROM recurring_expenses r
+        WHERE r.user_id = :u AND r.is_active = 1
+    ");
+    $stmt->execute([':u' => $userId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $ins = $conn->prepare("
+        INSERT IGNORE INTO transactions
+            (user_id, category_id, amount, description, type, transaction_date, notes, recurring_id)
+        VALUES (:u, :c, :a, :d, :t, :td, :n, :rid)
+    ");
+
+    foreach ($rows as $r) {
+        $start = DateTimeImmutable::createFromFormat('Y-m-d', (string)$r['start_date']);
+        if (!$start) continue;
+        $endLimit = $r['end_date']
+            ? DateTimeImmutable::createFromFormat('Y-m-d', (string)$r['end_date'])
+            : null;
+        if ($endLimit && $endLimit < $today) continue;
+        $upTo = $endLimit && $endLimit < $today ? $endLimit : $today;
+
+        // Punto desde donde empezar a generar: día siguiente a last_date,
+        // o el propio start_date si nunca se generó nada.
+        if ($r['last_date']) {
+            $cursor = DateTimeImmutable::createFromFormat('Y-m-d', (string)$r['last_date']);
+            if (!$cursor) continue;
+            $cursor = nextRecurringDate($cursor, $r['frequency'], $start);
+        } else {
+            $cursor = $start;
+        }
+
+        // Tope de seguridad por si alguien crea recurrentes con start_date muy antiguo.
+        $maxIterations = 240; // 20 años de mensuales / 5 de semanales
+        $i = 0;
+        while ($cursor <= $upTo && $i < $maxIterations) {
+            $ins->execute([
+                ':u'   => $userId,
+                ':c'   => $r['category_id'] !== null ? (int)$r['category_id'] : null,
+                ':a'   => (float)$r['amount'],
+                ':d'   => (string)$r['name'],
+                ':t'   => (string)$r['type'],
+                ':td'  => $cursor->format('Y-m-d'),
+                ':n'   => 'Generado automáticamente desde gasto fijo',
+                ':rid' => (int)$r['id'],
+            ]);
+            $cursor = nextRecurringDate($cursor, (string)$r['frequency'], $start);
+            $i++;
+        }
+    }
+}
+
+function nextRecurringDate(DateTimeImmutable $from, string $frequency, DateTimeImmutable $anchor): DateTimeImmutable {
+    return match ($frequency) {
+        'weekly'  => $from->modify('+1 week'),
+        'yearly'  => $from->modify('+1 year'),
+        'monthly' => addMonthSafely($from, $anchor),
+        default   => $from->modify('+1 month'),
+    };
+}
+
+// Suma un mes preservando el día del anchor cuando el mes destino
+// no tiene tantos días (p.ej. 31 ene + 1 mes -> 28/29 feb).
+function addMonthSafely(DateTimeImmutable $from, DateTimeImmutable $anchor): DateTimeImmutable {
+    $year  = (int)$from->format('Y');
+    $month = (int)$from->format('n');
+    $day   = (int)$anchor->format('j');
+    $month++;
+    if ($month > 12) { $month = 1; $year++; }
+    $lastDay = (int)(new DateTimeImmutable("$year-$month-01"))->format('t');
+    $day = min($day, $lastDay);
+    return new DateTimeImmutable(sprintf('%04d-%02d-%02d', $year, $month, $day));
+}
+
 // ================= MIDDLEWARE =================
-function requireAuth(): callable {
-    return function (Request $request, RequestHandlerInterface $handler) {
+function requireAuth(PDO $conn): callable {
+    return function (Request $request, RequestHandlerInterface $handler) use ($conn) {
         $user = authenticate($request);
         if (!$user) {
             $response = new \Slim\Psr7\Response();
             return jsonResponse($response, ['error'=>true,'message'=>'Token inválido o no proporcionado'], 401);
         }
+        // Expansión lazy: para cualquier petición autenticada generamos las
+        // transacciones recurrentes que toquen. Es idempotente gracias al
+        // INDEX UNIQUE (user_id, recurring_id, transaction_date).
+        try { expandRecurringTransactions($conn, (int)$user['user_id']); } catch (Throwable $e) { /* silencioso */ }
         return $handler->handle($request->withAttribute('user', $user));
     };
 }
@@ -141,7 +243,7 @@ $app->get('/', function (Request $request, Response $response) {
     return jsonResponse($response, [
         'success' => true,
         'name'    => 'Finanzas API · Gestión de gastos personales',
-        'version' => '1.0.0',
+        'version' => '1.1.0',
         'endpoints' => [
             'POST /auth/register             {name,email,password,currency?}',
             'POST /auth/login                {email,password}',
@@ -152,14 +254,16 @@ $app->get('/', function (Request $request, Response $response) {
             'POST /categories                 {name,type,color?,icon?}',
             'PUT  /categories/{id}',
             'DELETE /categories/{id}',
-            'GET  /transactions?from=&to=&type=&category_id=&search=&limit=&offset=',
-            'POST /transactions              {amount,description,type,transaction_date,category_id?,notes?}',
+            'GET  /transactions?from=&to=&type=&category_id=&payment_method=&search=&limit=&offset=',
+            'POST /transactions              {amount,description,type,transaction_date,category_id?,payment_method?,notes?}',
             'PUT  /transactions/{id}',
             'DELETE /transactions/{id}',
             'GET  /recurring',
             'POST /recurring                 {name,amount,frequency,start_date,type?,category_id?,end_date?,notes?}',
             'PUT  /recurring/{id}',
             'PATCH /recurring/{id}/toggle',
+            'POST  /recurring/{id}/toggle    (alias compat)',
+            'POST  /recurring/run            Genera transacciones recurrentes pendientes',
             'DELETE /recurring/{id}',
             'GET  /savings-goals',
             'POST /savings-goals             {name,target_amount,target_date?,description?,color?}',
@@ -167,11 +271,14 @@ $app->get('/', function (Request $request, Response $response) {
             'POST /savings-goals/{id}/contribute  {amount}',
             'DELETE /savings-goals/{id}',
             'GET  /budgets?month_year=YYYY-MM',
-            'POST /budgets                   {amount,month_year,category_id?}',
+            'POST /budgets                   {amount,month_year,category_id?,reset_day?}',
+            'PUT  /budgets/{id}              {amount?,reset_day?}',
             'DELETE /budgets/{id}',
             'GET  /analytics/summary?month_year=YYYY-MM',
             'GET  /analytics/monthly?months=6',
             'GET  /analytics/categories?month_year=YYYY-MM',
+            'GET  /analytics/category-comparison?months=6',
+            'GET  /analytics/payment-methods?month_year=YYYY-MM',
             'GET  /analytics/trends?days=30',
             'GET  /analytics/projection',
         ]
@@ -217,8 +324,6 @@ $app->post('/auth/register', function (Request $request, Response $response) use
         ]);
         $userId = (int)$conn->lastInsertId();
 
-        // Las categorías son globales (user_id NULL); ya no se siembran por usuario.
-
         $conn->commit();
 
         $user = fetchUser($conn, $userId);
@@ -247,6 +352,8 @@ $app->post('/auth/login', function (Request $request, Response $response) use ($
     }
 
     $user = fetchUser($conn, (int)$row['id']);
+    // Generar transacciones pendientes inmediatamente al iniciar sesión
+    try { expandRecurringTransactions($conn, (int)$user['id']); } catch (Throwable $e) {}
 
     return jsonResponse($response, [
         'success' => true,
@@ -327,8 +434,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
     });
 
     // ------ CATEGORIES ------
-    // Las categorías globales (user_id NULL) son compartidas y de solo lectura.
-    // Cada user puede crear, editar y borrar las suyas propias.
     $group->get('/categories', function (Request $request, Response $response) use ($conn) {
         $jwt = $request->getAttribute('user');
         $type = $request->getQueryParams()['type'] ?? null;
@@ -346,7 +451,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $stmt = $conn->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        // Normalizar is_system a boolean
         foreach ($rows as &$r) { $r['is_system'] = (bool)(int)$r['is_system']; }
         return jsonResponse($response, ['categories' => $rows]);
     });
@@ -361,7 +465,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (!in_array($type, ['expense','income'], true)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Tipo inválido'], 400);
         }
-        // Bloquear nombres que ya existen (en globales o en las del propio user)
         $dup = $conn->prepare("
             SELECT id FROM categories
             WHERE name = :n AND type = :t AND (user_id = :u OR user_id IS NULL)
@@ -400,7 +503,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $id  = (int)$args['id'];
 
         if (!userOwnsCategory($conn, $uid, $id)) {
-            // Diferenciar entre "no existe" y "no es tuya" (es global)
             $g = $conn->prepare("SELECT id FROM categories WHERE id = :id AND user_id IS NULL");
             $g->execute([':id'=>$id]);
             if ($g->fetch()) {
@@ -415,7 +517,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (array_key_exists('name', $data)) {
             $name = trim((string)$data['name']);
             if ($name === '') return jsonResponse($response, ['error'=>true,'message'=>'Nombre vacío'], 400);
-            // Comprobar conflicto contra globales y propias (excluyendo la actual)
             $dup = $conn->prepare("
                 SELECT id FROM categories
                 WHERE name = :n AND type = COALESCE(:t, type)
@@ -490,6 +591,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $sql = "
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
+                   t.payment_method, t.recurring_id,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t
@@ -509,6 +611,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
         if (!empty($q['category_id'])) {
             $sql .= " AND t.category_id = :cat"; $params[':cat'] = (int)$q['category_id'];
+        }
+        if (!empty($q['payment_method']) && validPaymentMethod($q['payment_method'])) {
+            $sql .= " AND t.payment_method = :pm"; $params[':pm'] = $q['payment_method'];
         }
         if (!empty($q['search'])) {
             $sql .= " AND (t.description LIKE :s OR t.notes LIKE :s)";
@@ -541,6 +646,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $date        = trim((string)($data['transaction_date'] ?? ''));
         $categoryId  = isset($data['category_id']) && $data['category_id'] !== '' ? (int)$data['category_id'] : null;
         $notes       = isset($data['notes']) ? trim((string)$data['notes']) : null;
+        $paymentMethod = isset($data['payment_method']) && $data['payment_method'] !== '' ? (string)$data['payment_method'] : null;
 
         if ($description === '') return jsonResponse($response, ['error'=>true,'message'=>'Descripción obligatoria'], 400);
         if ($amount < 0)          return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
@@ -548,6 +654,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             return jsonResponse($response, ['error'=>true,'message'=>'Tipo inválido'], 400);
         }
         if (!validDate($date)) return jsonResponse($response, ['error'=>true,'message'=>'Fecha inválida (YYYY-MM-DD)'], 400);
+        if (!validPaymentMethod($paymentMethod)) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Tipo de pago inválido'], 400);
+        }
 
         if ($categoryId !== null) {
             if (!userCanUseCategory($conn, (int)$jwt['user_id'], $categoryId)) {
@@ -556,17 +665,19 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
 
         $stmt = $conn->prepare("
-            INSERT INTO transactions (user_id, category_id, amount, description, type, transaction_date, notes)
-            VALUES (:u, :c, :a, :d, :t, :td, :n)
+            INSERT INTO transactions (user_id, category_id, amount, description, type, transaction_date, notes, payment_method)
+            VALUES (:u, :c, :a, :d, :t, :td, :n, :pm)
         ");
         $stmt->execute([
             ':u'=>(int)$jwt['user_id'], ':c'=>$categoryId, ':a'=>$amount,
-            ':d'=>$description, ':t'=>$type, ':td'=>$date, ':n'=>$notes ?: null
+            ':d'=>$description, ':t'=>$type, ':td'=>$date, ':n'=>$notes ?: null,
+            ':pm'=>$paymentMethod ?: null
         ]);
         $id = (int)$conn->lastInsertId();
 
         $sel = $conn->prepare("
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
+                   t.payment_method, t.recurring_id,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
@@ -619,6 +730,13 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 }
             }
             $fields[] = 'category_id = :cat'; $params[':cat'] = $cat;
+        }
+        if (array_key_exists('payment_method', $data)) {
+            $pm = $data['payment_method'] === null || $data['payment_method'] === '' ? null : (string)$data['payment_method'];
+            if (!validPaymentMethod($pm)) {
+                return jsonResponse($response, ['error'=>true,'message'=>'Tipo de pago inválido'], 400);
+            }
+            $fields[] = 'payment_method = :pm'; $params[':pm'] = $pm;
         }
         if (array_key_exists('notes', $data)) {
             $fields[] = 'notes = :notes'; $params[':notes'] = $data['notes'] ?: null;
@@ -713,6 +831,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             ':a'=>$amount, ':t'=>$type, ':f'=>$frequency,
             ':s'=>$start, ':e'=>$end, ':no'=>$notes ?: null
         ]);
+
+        // Regenerar transacciones inmediatamente
+        try { expandRecurringTransactions($conn, (int)$jwt['user_id']); } catch (Throwable $e) {}
         return jsonResponse($response, ['success'=>true,'id'=>(int)$conn->lastInsertId()], 201);
     });
 
@@ -783,7 +904,8 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         return jsonResponse($response, ['success'=>true]);
     });
 
-    $group->patch('/recurring/{id}/toggle', function (Request $request, Response $response, array $args) use ($conn) {
+    // PATCH y POST aceptados (POST como alias por si algún proxy bloquea PATCH)
+    $toggleHandler = function (Request $request, Response $response, array $args) use ($conn) {
         $jwt = $request->getAttribute('user');
         $stmt = $conn->prepare("
             UPDATE recurring_expenses SET is_active = 1 - is_active
@@ -791,6 +913,15 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         ");
         $stmt->execute([':id'=>(int)$args['id'], ':u'=>(int)$jwt['user_id']]);
         if ($stmt->rowCount() === 0) return jsonResponse($response, ['error'=>true,'message'=>'No existe'], 404);
+        return jsonResponse($response, ['success'=>true]);
+    };
+    $group->patch('/recurring/{id}/toggle', $toggleHandler);
+    $group->post('/recurring/{id}/toggle',  $toggleHandler);
+
+    // Forzar la generación bajo demanda (útil para depurar)
+    $group->post('/recurring/run', function (Request $request, Response $response) use ($conn) {
+        $jwt = $request->getAttribute('user');
+        expandRecurringTransactions($conn, (int)$jwt['user_id']);
         return jsonResponse($response, ['success'=>true]);
     });
 
@@ -937,14 +1068,17 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (!validMonthYear($month)) {
             return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido (YYYY-MM)'], 400);
         }
+        // El gasto se calcula a partir del reset_day del presupuesto:
+        // ventana = [año-mes-reset_day, +1 mes). Si reset_day = 1 equivale al mes natural.
         $stmt = $conn->prepare("
-            SELECT b.id, b.amount, b.month_year, b.category_id,
+            SELECT b.id, b.amount, b.month_year, b.reset_day, b.category_id,
                    c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    COALESCE((
                        SELECT SUM(t.amount) FROM transactions t
                        WHERE t.user_id = b.user_id
                          AND t.type = 'expense'
-                         AND DATE_FORMAT(t.transaction_date, '%Y-%m') = b.month_year
+                         AND t.transaction_date >= STR_TO_DATE(CONCAT(b.month_year, '-', LPAD(b.reset_day, 2, '0')), '%Y-%m-%d')
+                         AND t.transaction_date <  STR_TO_DATE(CONCAT(b.month_year, '-', LPAD(b.reset_day, 2, '0')), '%Y-%m-%d') + INTERVAL 1 MONTH
                          AND (b.category_id IS NULL OR t.category_id = b.category_id)
                    ), 0) AS spent
             FROM budgets b
@@ -965,6 +1099,8 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $amount = isset($data['amount']) ? (float)$data['amount'] : -1;
         $month  = (string)($data['month_year'] ?? '');
         $catId  = isset($data['category_id']) && $data['category_id'] !== '' ? (int)$data['category_id'] : null;
+        $resetDay = isset($data['reset_day']) ? (int)$data['reset_day'] : 1;
+        if ($resetDay < 1 || $resetDay > 28) $resetDay = 1;
 
         if ($amount < 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
         if (!validMonthYear($month)) return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido'], 400);
@@ -976,14 +1112,41 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
 
         $stmt = $conn->prepare("
-            INSERT INTO budgets (user_id, category_id, amount, month_year)
-            VALUES (:u, :c, :a, :m)
-            ON DUPLICATE KEY UPDATE amount = VALUES(amount)
+            INSERT INTO budgets (user_id, category_id, amount, month_year, reset_day)
+            VALUES (:u, :c, :a, :m, :rd)
+            ON DUPLICATE KEY UPDATE amount = VALUES(amount), reset_day = VALUES(reset_day)
         ");
         $stmt->execute([
-            ':u'=>(int)$jwt['user_id'], ':c'=>$catId, ':a'=>$amount, ':m'=>$month
+            ':u'=>(int)$jwt['user_id'], ':c'=>$catId, ':a'=>$amount, ':m'=>$month, ':rd'=>$resetDay
         ]);
         return jsonResponse($response, ['success'=>true], 201);
+    });
+
+    $group->put('/budgets/{id}', function (Request $request, Response $response, array $args) use ($conn) {
+        $jwt = $request->getAttribute('user');
+        $id  = (int)$args['id'];
+        $check = $conn->prepare("SELECT id FROM budgets WHERE id = :id AND user_id = :u");
+        $check->execute([':id'=>$id, ':u'=>(int)$jwt['user_id']]);
+        if (!$check->fetch()) return jsonResponse($response, ['error'=>true,'message'=>'Presupuesto no encontrado'], 404);
+
+        $data = $request->getParsedBody() ?? [];
+        $fields = []; $params = [':id'=>$id];
+
+        if (array_key_exists('amount', $data)) {
+            $a = (float)$data['amount'];
+            if ($a < 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+            $fields[] = 'amount = :amount'; $params[':amount'] = $a;
+        }
+        if (array_key_exists('reset_day', $data)) {
+            $rd = (int)$data['reset_day'];
+            if ($rd < 1 || $rd > 28) return jsonResponse($response, ['error'=>true,'message'=>'reset_day fuera de rango (1-28)'], 400);
+            $fields[] = 'reset_day = :rd'; $params[':rd'] = $rd;
+        }
+        if (!$fields) return jsonResponse($response, ['error'=>true,'message'=>'Sin datos para actualizar'], 400);
+
+        $stmt = $conn->prepare("UPDATE budgets SET ".implode(', ', $fields)." WHERE id = :id");
+        $stmt->execute($params);
+        return jsonResponse($response, ['success'=>true]);
     });
 
     $group->delete('/budgets/{id}', function (Request $request, Response $response, array $args) use ($conn) {
@@ -1019,7 +1182,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $balance      = $totalIncome - $totalExpense;
         $savingsRatio = $totalIncome > 0 ? round(($balance / $totalIncome) * 100, 2) : 0;
 
-        // Total acumulado histórico (saldo neto histórico)
         $hist = $conn->prepare("
             SELECT
                 SUM(CASE WHEN type='income'  THEN amount ELSE 0 END)
@@ -1029,12 +1191,10 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $hist->execute([':u'=>$uid]);
         $netTotal = (float)($hist->fetch(PDO::FETCH_ASSOC)['net_total'] ?? 0);
 
-        // Suma de progreso en metas de ahorro
         $g = $conn->prepare("SELECT COALESCE(SUM(current_amount),0) AS saved FROM savings_goals WHERE user_id = :u");
         $g->execute([':u'=>$uid]);
         $totalSaved = (float)($g->fetch(PDO::FETCH_ASSOC)['saved'] ?? 0);
 
-        // Gastos fijos proyectados (mensuales activos)
         $rec = $conn->prepare("
             SELECT type, frequency, amount
             FROM recurring_expenses
@@ -1047,6 +1207,18 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             $eq = monthlyEquivalent((float)$r['amount'], (string)$r['frequency']);
             if ($r['type'] === 'income') $recurringIncome += $eq; else $recurringExpense += $eq;
         }
+
+        // Comparativa con mes anterior
+        $prev = $conn->prepare("
+            SELECT
+                SUM(CASE WHEN type='income'  THEN amount ELSE 0 END) AS total_income,
+                SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS total_expense
+            FROM transactions
+            WHERE user_id = :u AND DATE_FORMAT(transaction_date, '%Y-%m') =
+                DATE_FORMAT(DATE_SUB(STR_TO_DATE(CONCAT(:m,'-01'), '%Y-%m-%d'), INTERVAL 1 MONTH), '%Y-%m')
+        ");
+        $prev->execute([':u'=>$uid, ':m'=>$month]);
+        $prevRow = $prev->fetch(PDO::FETCH_ASSOC) ?: ['total_income'=>0,'total_expense'=>0];
 
         return jsonResponse($response, [
             'month_year'           => $month,
@@ -1061,6 +1233,10 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 'expense' => round($recurringExpense, 2),
                 'income'  => round($recurringIncome, 2),
                 'net'     => round($recurringIncome - $recurringExpense, 2)
+            ],
+            'previous'             => [
+                'total_income'  => round((float)$prevRow['total_income'], 2),
+                'total_expense' => round((float)$prevRow['total_expense'], 2),
             ],
         ]);
     });
@@ -1107,7 +1283,59 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             ORDER BY total DESC
         ");
         $stmt->execute([':u'=>(int)$jwt['user_id'], ':m'=>$month]);
-        return jsonResponse($response, ['categories' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+        return jsonResponse($response, [
+            'month_year' => $month,
+            'categories' => $stmt->fetchAll(PDO::FETCH_ASSOC)
+        ]);
+    });
+
+    // Comparativa por categoría para los últimos N meses (matriz)
+    $group->get('/analytics/category-comparison', function (Request $request, Response $response) use ($conn) {
+        $jwt = $request->getAttribute('user');
+        $months = max(2, min(12, (int)($request->getQueryParams()['months'] ?? 6)));
+
+        $stmt = $conn->prepare("
+            SELECT DATE_FORMAT(t.transaction_date, '%Y-%m') AS month_year,
+                   t.category_id,
+                   COALESCE(c.name, 'Sin categoría') AS category_name,
+                   COALESCE(c.color, '#6B7280') AS category_color,
+                   SUM(t.amount) AS total
+            FROM transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            WHERE t.user_id = :u
+              AND t.type = 'expense'
+              AND t.transaction_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL :m MONTH)
+            GROUP BY month_year, t.category_id, c.name, c.color
+            ORDER BY month_year ASC, total DESC
+        ");
+        $stmt->bindValue(':u', (int)$jwt['user_id'], PDO::PARAM_INT);
+        $stmt->bindValue(':m', $months - 1, PDO::PARAM_INT);
+        $stmt->execute();
+        return jsonResponse($response, ['rows' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+    });
+
+    $group->get('/analytics/payment-methods', function (Request $request, Response $response) use ($conn) {
+        $jwt = $request->getAttribute('user');
+        $month = $request->getQueryParams()['month_year'] ?? date('Y-m');
+        if (!validMonthYear($month)) {
+            return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido'], 400);
+        }
+        $stmt = $conn->prepare("
+            SELECT COALESCE(payment_method, 'other') AS payment_method,
+                   SUM(amount) AS total,
+                   COUNT(*) AS count
+            FROM transactions
+            WHERE user_id = :u
+              AND type = 'expense'
+              AND DATE_FORMAT(transaction_date, '%Y-%m') = :m
+            GROUP BY payment_method
+            ORDER BY total DESC
+        ");
+        $stmt->execute([':u'=>(int)$jwt['user_id'], ':m'=>$month]);
+        return jsonResponse($response, [
+            'month_year'      => $month,
+            'payment_methods' => $stmt->fetchAll(PDO::FETCH_ASSOC)
+        ]);
     });
 
     $group->get('/analytics/trends', function (Request $request, Response $response) use ($conn) {
@@ -1134,7 +1362,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $jwt = $request->getAttribute('user');
         $uid = (int)$jwt['user_id'];
 
-        // Promedio gasto/ingreso últimos 3 meses
         $stmt = $conn->prepare("
             SELECT
                 AVG(monthly_income)  AS avg_income,
@@ -1154,7 +1381,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $avgIncome  = (float)($row['avg_income']  ?? 0);
         $avgExpense = (float)($row['avg_expense'] ?? 0);
 
-        // Gastos fijos proyectados
         $rec = $conn->prepare("
             SELECT type, frequency, amount FROM recurring_expenses
             WHERE user_id = :u AND is_active = 1
@@ -1179,7 +1405,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         ]);
     });
 
-})->add(requireAuth());
+})->add(requireAuth($conn));
 
 // ================= ERRORS =================
 $errorMiddleware = $app->addErrorMiddleware(true, true, true);
@@ -1189,7 +1415,10 @@ $errorMiddleware->setErrorHandler(\Slim\Exception\HttpNotFoundException::class,
         $r = $app->getResponseFactory()->createResponse();
         $r->getBody()->write(json_encode(['error'=>true,'message'=>'Ruta no encontrada']));
         return $r->withHeader('Content-Type','application/json')
-                 ->withHeader('Access-Control-Allow-Origin','*')->withStatus(404);
+                 ->withHeader('Access-Control-Allow-Origin','*')
+                 ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS)
+                 ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
+                 ->withStatus(404);
     });
 
 $errorMiddleware->setErrorHandler(\Slim\Exception\HttpMethodNotAllowedException::class,
@@ -1197,7 +1426,10 @@ $errorMiddleware->setErrorHandler(\Slim\Exception\HttpMethodNotAllowedException:
         $r = $app->getResponseFactory()->createResponse();
         $r->getBody()->write(json_encode(['error'=>true,'message'=>'Método no permitido']));
         return $r->withHeader('Content-Type','application/json')
-                 ->withHeader('Access-Control-Allow-Origin','*')->withStatus(405);
+                 ->withHeader('Access-Control-Allow-Origin','*')
+                 ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS)
+                 ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
+                 ->withStatus(405);
     });
 
 $errorMiddleware->setDefaultErrorHandler(
@@ -1205,7 +1437,10 @@ $errorMiddleware->setDefaultErrorHandler(
         $r = $app->getResponseFactory()->createResponse();
         $r->getBody()->write(json_encode(['error'=>true,'message'=>$d ? $e->getMessage() : 'Error interno del servidor']));
         return $r->withHeader('Content-Type','application/json')
-                 ->withHeader('Access-Control-Allow-Origin','*')->withStatus(500);
+                 ->withHeader('Access-Control-Allow-Origin','*')
+                 ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS)
+                 ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
+                 ->withStatus(500);
     });
 
 $app->run();

@@ -84,7 +84,7 @@ export const SettingsScreen: React.FC = () => {
           <View style={{ marginTop: spacing.xl }}>
             <Button title="Cerrar sesión" variant="secondary" onPress={logout} />
           </View>
-          <Text variant="caption" tone="muted" align="center">Finanzas v1.0.0</Text>
+          <Text variant="caption" tone="muted" align="center">Finanzas v1.1.0</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

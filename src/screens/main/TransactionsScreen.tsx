@@ -97,9 +97,7 @@ export const TransactionsScreen: React.FC = () => {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.accent} />
         }
-        ItemSeparatorComponent={() => (
-          <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: palette.borderSubtle, marginLeft: spacing.lg + 20 }} />
-        )}
+        
         ListEmptyComponent={
           <EmptyState
             icon="receipt-outline"

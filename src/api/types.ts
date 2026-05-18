@@ -1,5 +1,13 @@
 export type CategoryType = 'expense' | 'income';
 
+export type PaymentMethod =
+  | 'cash'
+  | 'debit_card'
+  | 'credit_card'
+  | 'bizum'
+  | 'transfer'
+  | 'other';
+
 export type Category = {
   id: number;
   name: string;
@@ -16,6 +24,8 @@ export type Transaction = {
   type: CategoryType;
   transaction_date: string;
   notes: string | null;
+  payment_method: PaymentMethod | null;
+  recurring_id: number | null;
   category_id: number | null;
   category_name: string | null;
   category_color: string | null;
@@ -68,6 +78,7 @@ export type Budget = {
   id: number;
   amount: number;
   month_year: string;
+  reset_day: number;
   category_id: number | null;
   category_name: string | null;
   category_color: string | null;
@@ -85,6 +96,7 @@ export type AnalyticsSummary = {
   net_total_historical: number;
   total_saved_in_goals: number;
   recurring_monthly: { expense: number; income: number; net: number };
+  previous: { total_income: number; total_expense: number };
 };
 
 export type MonthlyPoint = { month_year: string; income: number; expense: number };
@@ -95,6 +107,18 @@ export type CategoryStat = {
   category_color: string;
   category_icon: string | null;
   type: CategoryType;
+  total: number;
+  count: number;
+};
+export type CategoryComparisonRow = {
+  month_year: string;
+  category_id: number | null;
+  category_name: string;
+  category_color: string;
+  total: number;
+};
+export type PaymentMethodStat = {
+  payment_method: PaymentMethod | 'other';
   total: number;
   count: number;
 };

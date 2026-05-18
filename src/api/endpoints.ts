@@ -4,8 +4,11 @@ import type {
   Budget,
   Category,
   CategoryStat,
+  CategoryComparisonRow,
   AnalyticsSummary,
   MonthlyPoint,
+  PaymentMethod,
+  PaymentMethodStat,
   Projection,
   Recurring,
   RecurringResponse,
@@ -47,6 +50,7 @@ export type TransactionFilter = {
   to?: string;
   type?: 'expense' | 'income';
   category_id?: number;
+  payment_method?: PaymentMethod;
   search?: string;
   limit?: number;
   offset?: number;
@@ -63,6 +67,7 @@ export const transactionsApi = {
     type: 'expense' | 'income';
     transaction_date: string;
     category_id?: number | null;
+    payment_method?: PaymentMethod | null;
     notes?: string | null;
   }) =>
     http
@@ -80,8 +85,16 @@ export const recurringApi = {
     http.post('/recurring', data).then((r) => r.data),
   update: (id: number, data: Partial<Recurring>) =>
     http.put(`/recurring/${id}`, data).then((r) => r.data),
-  toggle: (id: number) => http.patch(`/recurring/${id}/toggle`).then((r) => r.data),
+  // Algunos proxys (mod_security en hostings compartidos) bloquean PATCH
+  // sin un OPTIONS válido. Si falla, reintentamos con POST al mismo path,
+  // que el backend acepta como alias.
+  toggle: (id: number) =>
+    http
+      .patch(`/recurring/${id}/toggle`)
+      .catch(() => http.post(`/recurring/${id}/toggle`))
+      .then((r) => r.data),
   remove: (id: number) => http.delete(`/recurring/${id}`).then((r) => r.data),
+  run: () => http.post('/recurring/run').then((r) => r.data),
 };
 
 // -------- GOALS --------
@@ -102,8 +115,10 @@ export const budgetsApi = {
     http
       .get<{ budgets: Budget[]; month_year: string }>('/budgets', { params: { month_year } })
       .then((r) => r.data.budgets),
-  upsert: (data: { amount: number; month_year: string; category_id?: number | null }) =>
+  upsert: (data: { amount: number; month_year: string; category_id?: number | null; reset_day?: number }) =>
     http.post('/budgets', data).then((r) => r.data),
+  update: (id: number, data: { amount?: number; reset_day?: number }) =>
+    http.put(`/budgets/${id}`, data).then((r) => r.data),
   remove: (id: number) => http.delete(`/budgets/${id}`).then((r) => r.data),
 };
 
@@ -119,8 +134,20 @@ export const analyticsApi = {
       .then((r) => r.data.monthly),
   categories: (month_year?: string) =>
     http
-      .get<{ categories: CategoryStat[] }>('/analytics/categories', { params: month_year ? { month_year } : {} })
-      .then((r) => r.data.categories),
+      .get<{ month_year: string; categories: CategoryStat[] }>('/analytics/categories', {
+        params: month_year ? { month_year } : {},
+      })
+      .then((r) => r.data),
+  categoryComparison: (months = 6) =>
+    http
+      .get<{ rows: CategoryComparisonRow[] }>('/analytics/category-comparison', { params: { months } })
+      .then((r) => r.data.rows),
+  paymentMethods: (month_year?: string) =>
+    http
+      .get<{ payment_methods: PaymentMethodStat[] }>('/analytics/payment-methods', {
+        params: month_year ? { month_year } : {},
+      })
+      .then((r) => r.data.payment_methods),
   trends: (days = 30) =>
     http
       .get<{ trends: TrendPoint[] }>('/analytics/trends', { params: { days } })

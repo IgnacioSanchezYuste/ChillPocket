@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet } from 'react-native';
+import { View, ScrollView, StyleSheet, Pressable } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Sheet } from '../../components/Sheet';
 import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
@@ -11,8 +12,10 @@ import { useToast } from '../../components/Toast';
 import { transactionsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { todayISO } from '../../utils/format';
-import { spacing } from '../../theme/spacing';
-import type { Transaction } from '../../api/types';
+import { spacing, radius } from '../../theme/spacing';
+import { useTheme } from '../../theme/ThemeProvider';
+import { PAYMENT_METHODS } from '../../utils/paymentMethods';
+import type { PaymentMethod, Transaction } from '../../api/types';
 
 type Props = {
   visible: boolean;
@@ -24,6 +27,7 @@ type Props = {
 export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved }) => {
   const { categories, fetchCategories, refreshAll } = useDataStore();
   const toast = useToast();
+  const { palette } = useTheme();
 
   const [type, setType] = useState<'expense' | 'income'>('expense');
   const [amount, setAmount] = useState('');
@@ -31,6 +35,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -46,6 +51,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setCategoryId(editing.category_id);
         setDate(editing.transaction_date);
         setNotes(editing.notes || '');
+        setPaymentMethod(editing.payment_method ?? null);
       } else {
         setType('expense');
         setAmount('');
@@ -53,11 +59,13 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setCategoryId(null);
         setDate(todayISO());
         setNotes('');
+        setPaymentMethod(null);
       }
     }
   }, [visible, editing]);
 
   const filtered = useMemo(() => categories.filter((c) => c.type === type), [categories, type]);
+  const generatedFromRecurring = !!editing?.recurring_id;
 
   const onSave = async () => {
     const amt = parseFloat(amount.replace(',', '.'));
@@ -74,6 +82,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           type,
           transaction_date: date,
           category_id: categoryId,
+          payment_method: paymentMethod,
           notes: notes.trim() || null,
         });
         toast.success('Transacción actualizada');
@@ -84,6 +93,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           type,
           transaction_date: date,
           category_id: categoryId,
+          payment_method: paymentMethod,
           notes: notes.trim() || null,
         });
         toast.success('Transacción creada');
@@ -126,6 +136,15 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         </View>
       }
     >
+      {generatedFromRecurring && (
+        <View style={[styles.infoBanner, { backgroundColor: palette.accentSoft, borderColor: palette.accent }]}>
+          <Ionicons name="repeat" size={16} color={palette.accent} />
+          <Text variant="caption" tone="accent" style={{ flex: 1 }}>
+            Generada desde un gasto fijo. Puedes editarla pero seguirá ligada al recurrente.
+          </Text>
+        </View>
+      )}
+
       <SegmentedControl
         options={[
           { value: 'expense', label: 'Gasto' },
@@ -176,6 +195,39 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         </ScrollView>
       </View>
 
+      {type === 'expense' && (
+        <View style={{ gap: spacing.sm }}>
+          <Text variant="label" tone="secondary">Tipo de pago</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+            {PAYMENT_METHODS.map((pm) => {
+              const active = paymentMethod === pm.value;
+              return (
+                <Pressable
+                  key={pm.value}
+                  onPress={() => setPaymentMethod(active ? null : pm.value)}
+                  style={[
+                    styles.pmChip,
+                    {
+                      backgroundColor: active ? palette.accentSoft : palette.bgElevated,
+                      borderColor: active ? palette.accent : palette.borderSubtle,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name={pm.icon}
+                    size={14}
+                    color={active ? palette.accent : palette.textSecondary}
+                  />
+                  <Text variant="label" weight={active ? 'semibold' : 'medium'}>
+                    {pm.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       <Input
         label="Notas (opcional)"
         placeholder="Añade detalles si quieres"
@@ -189,4 +241,21 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
 
 const styles = StyleSheet.create({
   chips: { gap: spacing.sm, paddingVertical: 4 },
+  pmChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  infoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+  },
 });

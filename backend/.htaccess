@@ -1,0 +1,31 @@
+# =====================================================
+# Finanzas API · .htaccess
+# - CORS a nivel de Apache (responde el preflight antes de Slim).
+# - Rewrite a index.php para que el routing siempre funcione.
+# =====================================================
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /API_Finanzas/
+
+    # Preflight OPTIONS: responder 200 directamente
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ $1 [R=200,L]
+
+    # Redirigir todo lo que no sea archivo/directorio real a index.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With"
+    Header always set Access-Control-Max-Age "86400"
+</IfModule>
+
+# Forzar que las respuestas 204/200 de OPTIONS no se cacheen mal
+<IfModule mod_env.c>
+    SetEnv no-gzip 1
+</IfModule>

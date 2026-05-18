@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
-import { Animated, StyleSheet, View } from 'react-native';
+import { Animated, Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeProvider';
 import { radius, spacing } from '../theme/spacing';
@@ -16,6 +16,9 @@ type Ctx = {
 
 const ToastContext = createContext<Ctx>({ show: () => {}, success: () => {}, error: () => {} });
 
+// useNativeDriver no está soportado en web (rompe con un warning ruidoso)
+const NATIVE_DRIVER = Platform.OS !== 'web';
+
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toast, setToast] = useState<Toast | null>(null);
   const opacity = useRef(new Animated.Value(0)).current;
@@ -25,9 +28,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     (message: string, kind: ToastKind = 'info') => {
       const id = ++idRef.current;
       setToast({ id, message, kind });
-      Animated.timing(opacity, { toValue: 1, duration: 180, useNativeDriver: true }).start();
+      Animated.timing(opacity, { toValue: 1, duration: 180, useNativeDriver: NATIVE_DRIVER }).start();
       setTimeout(() => {
-        Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => {
+        Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: NATIVE_DRIVER }).start(() => {
           setToast((curr) => (curr?.id === id ? null : curr));
         });
       }, 3500);

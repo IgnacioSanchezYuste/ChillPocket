@@ -1,0 +1,103 @@
+Versión 1.1.0 [2026-05-18]:Nacho ·
+
+Resumen general
+--------------
+Actualización mayor con foco en automatización de recurrentes, control de presupuesto,
+analítica visual mucho más rica, calculadora de inversiones, branding propio y
+corrección de bugs críticos (CORS PATCH, safe area móvil, warning de Animated en web).
+
+------------------------------------------------------------
+BACKEND (PHP / Slim · backend/index.php + .htaccess + update.sql)
+------------------------------------------------------------
+- Auto-generación de transacciones de gastos/ingresos fijos:
+  · Helper expandRecurringTransactions() que, para cada recurrente activo
+    del usuario, genera (con INSERT IGNORE) todas las transacciones que
+    deberían existir desde la última generación o desde start_date hasta hoy.
+  · Soporta frecuencias semanal, mensual (preserva día y maneja meses cortos)
+    y anual. Tope de seguridad de 240 iteraciones por recurrente.
+  · Se invoca lazy en /auth/login y desde el middleware requireAuth(), así que
+    no hace falta cron. Endpoint adicional POST /recurring/run para forzarlo.
+  · Las transacciones generadas quedan ligadas con recurring_id y un UNIQUE
+    (user_id, recurring_id, transaction_date) evita duplicados.
+- Tipo de pago en transacciones:
+  · Nueva columna payment_method (cash, debit_card, credit_card, bizum,
+    transfer, other). POST/PUT/GET y filtro ?payment_method=... lo aceptan.
+- Presupuestos por categoría completos:
+  · Nuevo PUT /budgets/{id} (amount + reset_day).
+  · Columna reset_day (1-28) para definir cuándo se reinicia el cómputo del mes.
+  · El "spent" se calcula sobre la ventana [mes-reset_day, +1 mes) en lugar
+    del mes natural.
+- Analítica mejorada:
+  · /analytics/summary devuelve también `previous` (gastos/ingresos del mes
+    anterior) para mostrar deltas en la UI.
+  · Nuevo /analytics/category-comparison?months=N (matriz mes×categoría).
+  · Nuevo /analytics/payment-methods?month_year=YYYY-MM (gastos agrupados
+    por tipo de pago).
+- CORS reforzado (fix bug PATCH bloqueado por preflight):
+  · Cortocircuito de OPTIONS antes de cargar Slim (status 204 con cabeceras).
+  · Cabeceras Access-Control-* añadidas también en los handlers de error.
+  · Nuevo backend/.htaccess con CORS a nivel de Apache + rewrite a index.php.
+  · El cliente ahora reintenta PATCH /recurring/{id}/toggle como POST si el
+    PATCH fuese bloqueado por algún proxy/mod_security en hosting compartido,
+    y el backend acepta ambos verbos en la misma ruta.
+
+------------------------------------------------------------
+BASE DE DATOS · backend/update.sql
+------------------------------------------------------------
+Script idempotente (se puede ejecutar varias veces sin romper nada) que añade:
+  · transactions.payment_method  VARCHAR(20)
+  · transactions.recurring_id    INT + UNIQUE(user_id, recurring_id, transaction_date)
+                                    + INDEX idx_recurring + FK ON DELETE SET NULL
+  · budgets.reset_day            TINYINT(2) DEFAULT 1
+Ejecuta el archivo desde phpMyAdmin / consola SQL una sola vez.
+
+------------------------------------------------------------
+FRONTEND (React Native · src/)
+------------------------------------------------------------
+- Tipo de pago en alta/edición de transacción (TransactionSheet):
+  · Chips horizontales con icono y label en español. Solo se muestra en gastos.
+  · Filtrable también desde el endpoint /transactions.
+  · TransactionRow muestra ahora el método de pago y un icono "repeat" si la
+    transacción fue generada desde un recurrente.
+- Nueva pantalla Presupuestos (src/screens/main/BudgetsScreen.tsx):
+  · Carrusel mes anterior/siguiente, resumen global del mes, lista de
+    presupuestos por categoría con progreso, color de alerta (>80% naranja,
+    >100% rojo) y opción global (sin categoría).
+  · Día de reinicio configurable por presupuesto.
+  · Edición y borrado vía sheet/long-press.
+- Pantalla Analítica rediseñada (AnalyticsScreen.tsx):
+  · Tarjetas de delta vs mes anterior (gastos/ingresos).
+  · Gráfico de barras comparando gastos por mes (últimos 6).
+  · Línea de ingresos vs gastos.
+  · Card "Gastos por categoría" convertida en carrusel mensual con flechas
+    a izquierda/derecha, sin permitir avanzar al futuro.
+  · Cada categoría muestra el % respecto al límite de presupuesto si existe
+    (en lugar del % respecto al total gastado, como pediste).
+  · Sección "Por tipo de pago" con totales por método.
+  · Resumen de presupuestos con enlace directo a la pantalla nueva.
+- Nueva pantalla Inversiones (InvestmentsScreen.tsx):
+  · Calculadora de interés compuesto: inversión inicial, aportación periódica
+    (semanal/mensual/anual), % anual y años a proyectar.
+  · Comparativa por defecto: tu inversión + cuenta remunerada (2.5%) + cuenta
+    ahorro (0.5%), todas editables y activables/desactivables.
+  · Gráfico de líneas con un dataset por escenario y marcadores por año.
+  · KPIs: valor final, intereses generados, aportado.
+  · Tabla detalle año a año.
+- Safe area móvil:
+  · TabBar usa useSafeAreaInsets para sumar el inset bottom a la altura y
+    el padding, así los iconos ya no quedan por debajo de la barra de
+    navegación gestual en Android edge-to-edge / iOS home indicator.
+- Toast: useNativeDriver desactivado en web (Platform.OS !== 'web') para
+  eliminar el warning ruidoso de NativeAnimatedHelper en navegador.
+- Branding wallet-solid:
+  · app.json apunta a assets/wallet-solid.png como icon, adaptive-icon,
+    splash y favicon. Fondo splash #EEF2FF (accentSoft).
+  · Nuevo componente BrandLogo (src/components/BrandLogo.tsx) que pinta el
+    icono con tinte según el tema, usado en:
+       - LoginScreen y RegisterScreen (sustituye al icono genérico).
+       - DashboardScreen (esquina del header).
+       - TabBar de la pestaña "Home".
+- Navegación: añadidas rutas Budgets e Investments al stack, expuestas en el
+  menú "Más" con descripciones.
+- Versión visible en Ajustes actualizada a v1.1.0.
+- app.json: version 1.1.0.

@@ -1,6 +1,6 @@
 import React from 'react';
-import { View, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Pressable, ScrollView, StyleSheet, Platform } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,7 @@ import { spacing } from '../theme/spacing';
 import { Text } from '../components/Text';
 import { Card } from '../components/Card';
 import { ScreenHeader } from '../components/ScreenHeader';
+import { BrandLogo } from '../components/BrandLogo';
 import { DashboardScreen } from '../screens/main/DashboardScreen';
 import { TransactionsScreen } from '../screens/main/TransactionsScreen';
 import { AnalyticsScreen } from '../screens/main/AnalyticsScreen';
@@ -16,6 +17,8 @@ import { RecurringScreen } from '../screens/main/RecurringScreen';
 import { GoalsScreen } from '../screens/main/GoalsScreen';
 import { SettingsScreen } from '../screens/main/SettingsScreen';
 import { CategoriesScreen } from '../screens/main/CategoriesScreen';
+import { BudgetsScreen } from '../screens/main/BudgetsScreen';
+import { InvestmentsScreen } from '../screens/main/InvestmentsScreen';
 
 export type AppStackParamList = {
   Tabs: undefined;
@@ -23,6 +26,8 @@ export type AppStackParamList = {
   Goals: undefined;
   Settings: undefined;
   Categories: undefined;
+  Budgets: undefined;
+  Investments: undefined;
 };
 
 const Stack = createNativeStackNavigator<AppStackParamList>();
@@ -31,6 +36,8 @@ const Tab = createBottomTabNavigator();
 const MoreScreen: React.FC<any> = ({ navigation }) => {
   const { palette } = useTheme();
   const items: { key: keyof typeof Ionicons.glyphMap; label: string; description: string; route: keyof AppStackParamList }[] = [
+    { key: 'wallet-outline', label: 'Presupuestos', description: 'Límites mensuales por categoría', route: 'Budgets' },
+    { key: 'trending-up-outline', label: 'Inversiones', description: 'Calculadora de interés compuesto', route: 'Investments' },
     { key: 'repeat-outline', label: 'Gastos fijos', description: 'Suscripciones y recurrentes', route: 'Recurring' },
     { key: 'flag-outline', label: 'Metas de ahorro', description: 'Objetivos y progreso', route: 'Goals' },
     { key: 'pricetags-outline', label: 'Categorías', description: 'Personaliza tus etiquetas', route: 'Categories' },
@@ -65,6 +72,12 @@ const MoreScreen: React.FC<any> = ({ navigation }) => {
 
 const Tabs: React.FC = () => {
   const { palette } = useTheme();
+  const insets = useSafeAreaInsets();
+  // En Android edge-to-edge y iOS con home indicator, sumamos el inset bottom
+  // para que los iconos no queden ocultos bajo la barra de navegación gestual.
+  const bottomInset = insets.bottom;
+  const baseHeight = 64;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -75,8 +88,8 @@ const Tabs: React.FC = () => {
           backgroundColor: palette.bgSurface,
           borderTopColor: palette.borderSubtle,
           borderTopWidth: 1,
-          height: 64,
-          paddingBottom: 8,
+          height: baseHeight + bottomInset,
+          paddingBottom: 8 + bottomInset,
           paddingTop: 6,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
@@ -87,6 +100,10 @@ const Tabs: React.FC = () => {
             Analítica: focused ? 'pie-chart' : 'pie-chart-outline',
             Más: focused ? 'apps' : 'apps-outline',
           };
+          if (route.name === 'Home') {
+            // Insertamos el logo de la marca como icono del Home
+            return <BrandLogo size={focused ? 28 : 26} withBackground={false} />;
+          }
           return <Ionicons name={map[route.name] || 'ellipse-outline'} size={22} color={color} />;
         },
       })}
@@ -106,6 +123,8 @@ export const AppNavigator: React.FC = () => (
     <Stack.Screen name="Goals" component={GoalsScreen} />
     <Stack.Screen name="Categories" component={CategoriesScreen} />
     <Stack.Screen name="Settings" component={SettingsScreen} />
+    <Stack.Screen name="Budgets" component={BudgetsScreen} />
+    <Stack.Screen name="Investments" component={InvestmentsScreen} />
   </Stack.Navigator>
 );
 

@@ -11,8 +11,10 @@ import type {
   AnalyticsSummary,
   Budget,
   Category,
+  CategoryComparisonRow,
   CategoryStat,
   MonthlyPoint,
+  PaymentMethodStat,
   Projection,
   Recurring,
   RecurringResponse,
@@ -54,9 +56,12 @@ type DataState = {
   summary: AnalyticsSummary | null;
   monthly: MonthlyPoint[];
   categoryStats: CategoryStat[];
+  categoryComparison: CategoryComparisonRow[];
+  paymentMethodStats: PaymentMethodStat[];
   trends: TrendPoint[];
   projection: Projection | null;
   analyticsLoading: boolean;
+  analyticsMonth: string;
   fetchAnalytics: (month?: string) => Promise<void>;
 
   // Cross-cutting
@@ -75,8 +80,11 @@ const empty = {
   summary: null,
   monthly: [],
   categoryStats: [],
+  categoryComparison: [],
+  paymentMethodStats: [],
   trends: [],
   projection: null,
+  analyticsMonth: currentMonthYear(),
 };
 
 export const useDataStore = create<DataState>((set, get) => ({
@@ -140,17 +148,28 @@ export const useDataStore = create<DataState>((set, get) => ({
   },
 
   fetchAnalytics: async (month) => {
-    set({ analyticsLoading: true });
+    const m = month ?? get().analyticsMonth ?? currentMonthYear();
+    set({ analyticsLoading: true, analyticsMonth: m });
     try {
-      const m = month ?? currentMonthYear();
-      const [summary, monthly, categoryStats, trends, projection] = await Promise.all([
-        analyticsApi.summary(m),
-        analyticsApi.monthly(6),
-        analyticsApi.categories(m),
-        analyticsApi.trends(30),
-        analyticsApi.projection(),
-      ]);
-      set({ summary, monthly, categoryStats, trends, projection });
+      const [summary, monthly, categoriesRes, comparison, paymentMethodStats, trends, projection] =
+        await Promise.all([
+          analyticsApi.summary(m),
+          analyticsApi.monthly(6),
+          analyticsApi.categories(m),
+          analyticsApi.categoryComparison(6),
+          analyticsApi.paymentMethods(m),
+          analyticsApi.trends(30),
+          analyticsApi.projection(),
+        ]);
+      set({
+        summary,
+        monthly,
+        categoryStats: categoriesRes.categories,
+        categoryComparison: comparison,
+        paymentMethodStats,
+        trends,
+        projection,
+      });
     } finally {
       set({ analyticsLoading: false });
     }
@@ -163,6 +182,7 @@ export const useDataStore = create<DataState>((set, get) => ({
       get().fetchRecurring(),
       get().fetchGoals(),
       get().fetchAnalytics(),
+      get().fetchBudgets(),
     ]);
   },
 
