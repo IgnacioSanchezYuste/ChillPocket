@@ -98,7 +98,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         });
         toast.success('Transacción creada');
       }
-      await refreshAll();
+      await refreshAll(true);
       onSaved?.();
       onClose();
     } catch (e) {
@@ -114,7 +114,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
     try {
       await transactionsApi.remove(editing.id);
       toast.success('Eliminada');
-      await refreshAll();
+      await refreshAll(true);
       onSaved?.();
       onClose();
     } catch (e) {

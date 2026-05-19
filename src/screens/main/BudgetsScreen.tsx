@@ -45,7 +45,7 @@ export const BudgetsScreen: React.FC = () => {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchBudgets(activeMonth);
+    await fetchBudgets(activeMonth, true);
     setRefreshing(false);
   };
 
@@ -89,7 +89,7 @@ export const BudgetsScreen: React.FC = () => {
         });
         toast.success('Presupuesto guardado');
       }
-      await fetchBudgets(activeMonth);
+      await fetchBudgets(activeMonth, true);
       setSheetOpen(false);
     } catch (e) {
       toast.error(apiError(e));
@@ -110,7 +110,7 @@ export const BudgetsScreen: React.FC = () => {
           onPress: async () => {
             try {
               await budgetsApi.remove(b.id);
-              await fetchBudgets(activeMonth);
+              await fetchBudgets(activeMonth, true);
               toast.success('Eliminado');
             } catch (e) {
               toast.error(apiError(e));

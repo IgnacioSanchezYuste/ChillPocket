@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, ScrollView, StyleSheet, Pressable, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
-import { spacing } from '../../theme/spacing';
+import { spacing, radius } from '../../theme/spacing';
 import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ProgressBar } from '../../components/ProgressBar';
@@ -19,18 +20,16 @@ import type { SavingsGoal } from '../../api/types';
 export const GoalsScreen: React.FC = () => {
   const { palette } = useTheme();
   const { user } = useAuthStore();
-  const { goals, fetchGoals } = useDataStore();
+  const { goals, fetchGoals, availableBalance } = useDataStore();
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<SavingsGoal | null>(null);
 
-  useEffect(() => {
-    fetchGoals();
-  }, []);
+  useFocusEffect(useCallback(() => { fetchGoals(); }, []));
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchGoals();
+    await fetchGoals(true);
     setRefreshing(false);
   };
 
@@ -44,6 +43,23 @@ export const GoalsScreen: React.FC = () => {
       >
         <ScreenHeader title="Metas de ahorro" subtitle={`${goals.length} ${goals.length === 1 ? 'meta' : 'metas'}`} showBack />
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+          <View style={[styles.balanceCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+            <View style={{ flex: 1 }}>
+              <Text variant="caption" tone="muted">Saldo disponible para aportar</Text>
+              <Text
+                variant="h1"
+                weight="bold"
+                tabular
+                tone={availableBalance > 0 ? 'success' : availableBalance < 0 ? 'danger' : 'primary'}
+                style={{ marginTop: 2 }}
+              >
+                {formatMoney(availableBalance, currency)}
+              </Text>
+            </View>
+            <View style={[styles.balanceIcon, { backgroundColor: palette.accentSoft }]}>
+              <Ionicons name="wallet" size={22} color={palette.accent} />
+            </View>
+          </View>
           {goals.length === 0 ? (
             <EmptyState
               icon="flag-outline"
@@ -118,4 +134,19 @@ export const GoalsScreen: React.FC = () => {
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   metaRow: { marginTop: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  balanceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  balanceIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

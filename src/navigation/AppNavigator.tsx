@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Pressable, ScrollView, StyleSheet, Platform } from 'react-native';
+import { View, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -9,7 +9,6 @@ import { spacing } from '../theme/spacing';
 import { Text } from '../components/Text';
 import { Card } from '../components/Card';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { BrandLogo } from '../components/BrandLogo';
 import { DashboardScreen } from '../screens/main/DashboardScreen';
 import { TransactionsScreen } from '../screens/main/TransactionsScreen';
 import { AnalyticsScreen } from '../screens/main/AnalyticsScreen';
@@ -100,10 +99,6 @@ const Tabs: React.FC = () => {
             Analítica: focused ? 'pie-chart' : 'pie-chart-outline',
             Más: focused ? 'apps' : 'apps-outline',
           };
-          if (route.name === 'Home') {
-            // Insertamos el logo de la marca como icono del Home
-            return <BrandLogo size={focused ? 28 : 26} withBackground={false} />;
-          }
           return <Ionicons name={map[route.name] || 'ellipse-outline'} size={22} color={color} />;
         },
       })}

@@ -26,6 +26,7 @@ export type Transaction = {
   notes: string | null;
   payment_method: PaymentMethod | null;
   recurring_id: number | null;
+  goal_id: number | null;
   category_id: number | null;
   category_name: string | null;
   category_color: string | null;

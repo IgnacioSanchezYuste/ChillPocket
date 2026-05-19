@@ -4,28 +4,28 @@
     "slug": "Finanzas",
     "version": "1.1.0",
     "orientation": "portrait",
-    "icon": "./assets/wallet-solid.png",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/wallet-solid.png",
+      "image": "./assets/favicon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#EEF2FF"
+      "backgroundColor": "#ffffff"
     },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/wallet-solid.png",
-        "backgroundColor": "#EEF2FF"
+        "foregroundImage": "./assets/adaptive-icon.png"
+        
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.anonymous.Finanzas"
     },
     "web": {
-      "favicon": "./assets/wallet-solid.png"
+      "favicon": "./assets/favicon.png"
     },
     "extra": {
       "eas": {

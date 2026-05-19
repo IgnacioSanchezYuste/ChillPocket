@@ -40,7 +40,7 @@ export const RegisterScreen: React.FC<Props> = ({ onGoToLogin }) => {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <View style={{ marginBottom: spacing.xxl, gap: spacing.sm }}>
-            <BrandLogo size={64} style={styles.logo} />
+            <BrandLogo size={80} style={styles.logo} />
             <Text variant="h1">Crea tu cuenta</Text>
             <Text variant="body" tone="secondary">
               Empieza a controlar tus gastos en menos de un minuto.

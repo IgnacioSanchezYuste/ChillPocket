@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, View, StyleSheet, Dimensions, RefreshControl, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BarChart, LineChart } from 'react-native-chart-kit';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -13,7 +13,6 @@ import { Card } from '../../components/Card';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { ProgressBar } from '../../components/ProgressBar';
 import { EmptyState } from '../../components/EmptyState';
-import { analyticsApi } from '../../api/endpoints';
 import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
 import { paymentMethodLabel, paymentMethodMeta } from '../../utils/paymentMethods';
 import type { CategoryStat, PaymentMethod } from '../../api/types';
@@ -25,6 +24,7 @@ export const AnalyticsScreen: React.FC = () => {
   const {
     summary,
     monthly,
+    categoryStats,
     categoryComparison,
     paymentMethodStats,
     projection,
@@ -34,33 +34,44 @@ export const AnalyticsScreen: React.FC = () => {
   } = useDataStore();
   const [refreshing, setRefreshing] = useState(false);
   const [carouselMonth, setCarouselMonth] = useState<string>(currentMonthYear());
-  const [carouselCategories, setCarouselCategories] = useState<CategoryStat[]>([]);
-  const [carouselLoading, setCarouselLoading] = useState(false);
 
-  useEffect(() => {
-    fetchAnalytics();
-    fetchBudgets();
-  }, []);
+  // El carrusel también disparaba carga al cambiar de mes; ya no es necesario
+  // pero seguimos exponiendo `carouselLoading` por compatibilidad con la UI.
+  const carouselLoading = false;
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setCarouselLoading(true);
-      try {
-        const res = await analyticsApi.categories(carouselMonth);
-        if (!cancelled) setCarouselCategories(res.categories.filter((c) => c.type === 'expense'));
-      } finally {
-        if (!cancelled) setCarouselLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [carouselMonth]);
+  // El carrusel deriva sus datos del bundle ya en memoria (categoryStats
+  // para el mes actual, categoryComparison para meses anteriores). Así no
+  // hace falta una llamada HTTP adicional por cada cambio de mes.
+  const carouselCategories: CategoryStat[] = useMemo(() => {
+    if (carouselMonth === (summary?.month_year || currentMonthYear())) {
+      return categoryStats.filter((c) => c.type === 'expense');
+    }
+    // Reagrupar la comparación a forma CategoryStat para el mes pedido
+    return categoryComparison
+      .filter((r) => r.month_year === carouselMonth)
+      .map<CategoryStat>((r) => ({
+        category_id: r.category_id,
+        category_name: r.category_name,
+        category_color: r.category_color,
+        category_icon: null,
+        type: 'expense',
+        total: Number(r.total),
+        count: 0,
+      }));
+  }, [carouselMonth, categoryStats, categoryComparison, summary?.month_year]);
+
+  // Refrescar cada vez que la pantalla recibe foco. El store tiene throttle
+  // de 30s, así que no machaca el servidor si abres/cierras pestañas rápido.
+  useFocusEffect(
+    useCallback(() => {
+      fetchAnalytics();
+      fetchBudgets();
+    }, [])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([fetchAnalytics(), fetchBudgets()]);
+    await Promise.all([fetchAnalytics(undefined, true), fetchBudgets(undefined, true)]);
     setRefreshing(false);
   };
 

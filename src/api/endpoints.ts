@@ -98,14 +98,25 @@ export const recurringApi = {
 };
 
 // -------- GOALS --------
+export type GoalsListResponse = {
+  goals: SavingsGoal[];
+  available_balance: number;
+};
+
+export type GoalContributeResponse = {
+  success: true;
+  goal: { id: number; current_amount: number; target_amount: number };
+  available_balance: number;
+};
+
 export const goalsApi = {
-  list: () => http.get<{ goals: SavingsGoal[] }>('/savings-goals').then((r) => r.data.goals),
+  list: () => http.get<GoalsListResponse>('/savings-goals').then((r) => r.data),
   create: (data: Partial<SavingsGoal> & { name: string; target_amount: number }) =>
     http.post('/savings-goals', data).then((r) => r.data),
   update: (id: number, data: Partial<SavingsGoal>) =>
     http.put(`/savings-goals/${id}`, data).then((r) => r.data),
   contribute: (id: number, amount: number) =>
-    http.post(`/savings-goals/${id}/contribute`, { amount }).then((r) => r.data),
+    http.post<GoalContributeResponse>(`/savings-goals/${id}/contribute`, { amount }).then((r) => r.data),
   remove: (id: number) => http.delete(`/savings-goals/${id}`).then((r) => r.data),
 };
 
@@ -123,7 +134,23 @@ export const budgetsApi = {
 };
 
 // -------- ANALYTICS --------
+export type AnalyticsBundle = {
+  summary: AnalyticsSummary;
+  monthly: MonthlyPoint[];
+  categories: CategoryStat[];
+  category_comparison: CategoryComparisonRow[];
+  payment_methods: PaymentMethodStat[];
+  trends: TrendPoint[];
+  projection: Projection;
+};
+
 export const analyticsApi = {
+  // Combinado: 1 petición HTTP en vez de 7. Ahorra muchísimas conexiones MySQL
+  // en hostings con cuota como Hostinger (500 conex/hora).
+  all: (params?: { month_year?: string; months?: number; days?: number }) =>
+    http.get<AnalyticsBundle>('/analytics/all', { params: params ?? {} }).then((r) => r.data),
+
+  // Endpoints individuales (los mantenemos por compatibilidad / casos puntuales).
   summary: (month_year?: string) =>
     http
       .get<AnalyticsSummary>('/analytics/summary', { params: month_year ? { month_year } : {} })

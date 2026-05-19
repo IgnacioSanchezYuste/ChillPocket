@@ -39,7 +39,7 @@ export const LoginScreen: React.FC<Props> = ({ onGoToRegister }) => {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <View style={{ marginBottom: spacing.xxl, gap: spacing.sm }}>
-            <BrandLogo size={64} style={styles.logo} />
+            <BrandLogo size={80} style={styles.logo} />
             <Text variant="h1">Bienvenido de nuevo</Text>
             <Text variant="body" tone="secondary">
               Inicia sesión para continuar gestionando tus finanzas.

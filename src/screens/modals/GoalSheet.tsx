@@ -1,13 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { View, StyleSheet, Pressable } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Sheet } from '../../components/Sheet';
 import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
+import { Text } from '../../components/Text';
 import { useToast } from '../../components/Toast';
 import { goalsApi } from '../../api/endpoints';
 import { useDataStore } from '../../store/useDataStore';
-import { spacing } from '../../theme/spacing';
+import { useAuthStore } from '../../store/useAuthStore';
+import { useTheme } from '../../theme/ThemeProvider';
+import { spacing, radius } from '../../theme/spacing';
 import { apiError } from '../../api/http';
+import { formatMoney } from '../../utils/format';
 import type { SavingsGoal } from '../../api/types';
 
 type Props = {
@@ -17,34 +22,45 @@ type Props = {
   onSaved?: () => void;
 };
 
+type Mode = 'form' | 'move';
+type Direction = 'in' | 'out';
+
 export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved }) => {
-  const { fetchGoals } = useDataStore();
+  const { fetchGoals, refreshAll, availableBalance } = useDataStore();
+  const { user } = useAuthStore();
+  const { palette } = useTheme();
   const toast = useToast();
+  const currency = user?.currency || 'EUR';
+
+  const [mode, setMode] = useState<Mode>('form');
   const [name, setName] = useState('');
   const [target, setTarget] = useState('');
-  const [current, setCurrent] = useState('');
   const [date, setDate] = useState('');
   const [saving, setSaving] = useState(false);
+  // Move mode
+  const [direction, setDirection] = useState<Direction>('in');
+  const [moveAmount, setMoveAmount] = useState('');
 
   useEffect(() => {
     if (visible) {
       if (editing) {
         setName(editing.name);
         setTarget(String(editing.target_amount));
-        setCurrent(String(editing.current_amount));
         setDate(editing.target_date || '');
+        setMode('move'); // Si ya existe, abrimos directamente la vista de aportar/retirar
       } else {
         setName('');
         setTarget('');
-        setCurrent('0');
         setDate('');
+        setMode('form');
       }
+      setDirection('in');
+      setMoveAmount('');
     }
   }, [visible, editing]);
 
-  const onSave = async () => {
+  const onSaveMeta = async () => {
     const t = parseFloat(target.replace(',', '.'));
-    const c = parseFloat(current.replace(',', '.')) || 0;
     if (!name.trim()) return toast.error('Añade un nombre');
     if (!Number.isFinite(t) || t <= 0) return toast.error('Objetivo inválido');
     setSaving(true);
@@ -53,19 +69,44 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
         await goalsApi.update(editing.id, {
           name: name.trim(),
           target_amount: t,
-          current_amount: c,
           target_date: date || null,
         });
+        toast.success('Meta actualizada');
       } else {
         await goalsApi.create({
           name: name.trim(),
           target_amount: t,
-          current_amount: c,
           target_date: date || undefined,
         });
+        toast.success('Meta creada');
       }
       await fetchGoals();
-      toast.success('Guardado');
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      toast.error(apiError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onMove = async () => {
+    if (!editing) return;
+    const amt = parseFloat(moveAmount.replace(',', '.'));
+    if (!Number.isFinite(amt) || amt <= 0) return toast.error('Importe inválido');
+    // Validaciones cliente (la principal se valida también en backend)
+    if (direction === 'in' && amt > availableBalance) {
+      return toast.error(`Solo tienes ${formatMoney(availableBalance, currency)} disponibles`);
+    }
+    if (direction === 'out' && amt > Number(editing.current_amount)) {
+      return toast.error(`La meta solo tiene ${formatMoney(Number(editing.current_amount), currency)}`);
+    }
+    setSaving(true);
+    try {
+      const signed = direction === 'in' ? amt : -amt;
+      await goalsApi.contribute(editing.id, signed);
+      await refreshAll(true);
+      toast.success(direction === 'in' ? 'Aportación registrada' : 'Retirada registrada');
       onSaved?.();
       onClose();
     } catch (e) {
@@ -80,7 +121,7 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
     setSaving(true);
     try {
       await goalsApi.remove(editing.id);
-      await fetchGoals();
+      await refreshAll(true);
       toast.success('Eliminada');
       onSaved?.();
       onClose();
@@ -91,34 +132,217 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
     }
   };
 
+  const isEditing = !!editing;
+
   return (
     <Sheet
       visible={visible}
       onClose={onClose}
-      title={editing ? 'Editar meta' : 'Nueva meta de ahorro'}
+      title={
+        isEditing
+          ? mode === 'move'
+            ? `Mover dinero · ${editing!.name}`
+            : `Editar ${editing!.name}`
+          : 'Nueva meta de ahorro'
+      }
       footer={
         <View style={{ gap: spacing.sm }}>
-          <Button title={editing ? 'Guardar' : 'Crear'} loading={saving} onPress={onSave} size="lg" />
-          {editing && <Button title="Eliminar" variant="ghost" onPress={onDelete} />}
+          {mode === 'form' ? (
+            <Button title={isEditing ? 'Guardar cambios' : 'Crear meta'} loading={saving} onPress={onSaveMeta} size="lg" />
+          ) : (
+            <Button
+              title={direction === 'in' ? 'Aportar a la meta' : 'Retirar de la meta'}
+              loading={saving}
+              onPress={onMove}
+              size="lg"
+            />
+          )}
+          {isEditing && (
+            <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+              <View style={{ flex: 1 }}>
+                <Button
+                  title={mode === 'move' ? 'Editar datos' : 'Mover dinero'}
+                  variant="secondary"
+                  onPress={() => setMode(mode === 'move' ? 'form' : 'move')}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Button title="Eliminar" variant="ghost" onPress={onDelete} />
+              </View>
+            </View>
+          )}
         </View>
       }
     >
-      <Input label="Nombre" placeholder="p.ej. Viaje a Japón" value={name} onChangeText={setName} />
-      <Input label="Objetivo" keyboardType="decimal-pad" placeholder="0.00" value={target} onChangeText={setTarget} />
-      <Input
-        label="Ya ahorrado"
-        keyboardType="decimal-pad"
-        placeholder="0.00"
-        value={current}
-        onChangeText={setCurrent}
-      />
-      <Input
-        label="Fecha objetivo (opcional)"
-        placeholder="YYYY-MM-DD"
-        value={date}
-        onChangeText={setDate}
-        autoCapitalize="none"
-      />
+      {isEditing && mode === 'move' && (
+        <>
+          <View style={[styles.balanceCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+            <View style={styles.balanceRow}>
+              <View style={{ flex: 1 }}>
+                <Text variant="caption" tone="muted">Saldo disponible</Text>
+                <Text variant="h2" weight="semibold" tabular tone={availableBalance > 0 ? 'success' : 'danger'}>
+                  {formatMoney(availableBalance, currency)}
+                </Text>
+              </View>
+              <View style={[styles.balanceDivider, { backgroundColor: palette.borderSubtle }]} />
+              <View style={{ flex: 1 }}>
+                <Text variant="caption" tone="muted">En la meta</Text>
+                <Text variant="h2" weight="semibold" tabular>
+                  {formatMoney(Number(editing!.current_amount), currency)}
+                </Text>
+                <Text variant="caption" tone="muted">
+                  de {formatMoney(Number(editing!.target_amount), currency)}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.dirRow}>
+            <DirectionButton
+              active={direction === 'in'}
+              icon="arrow-down-circle"
+              label="Aportar"
+              description="del saldo a la meta"
+              color={palette.accent}
+              onPress={() => setDirection('in')}
+            />
+            <DirectionButton
+              active={direction === 'out'}
+              icon="arrow-up-circle"
+              label="Retirar"
+              description="de la meta al saldo"
+              color={palette.warning}
+              onPress={() => setDirection('out')}
+            />
+          </View>
+
+          <Input
+            label="Importe"
+            keyboardType="decimal-pad"
+            placeholder="0.00"
+            value={moveAmount}
+            onChangeText={setMoveAmount}
+            helper={
+              direction === 'in'
+                ? `Máximo ${formatMoney(availableBalance, currency)}`
+                : `Máximo ${formatMoney(Number(editing!.current_amount), currency)}`
+            }
+          />
+
+          <View style={styles.quickRow}>
+            {[25, 50, 100, 250].map((q) => (
+              <Pressable
+                key={q}
+                onPress={() => setMoveAmount(String(q))}
+                style={[styles.quickChip, { borderColor: palette.borderSubtle, backgroundColor: palette.bgElevated }]}
+              >
+                <Text variant="label" weight="medium">{formatMoney(q, currency)}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <View style={[styles.note, { backgroundColor: palette.accentSoft, borderColor: palette.accent }]}>
+            <Ionicons name="information-circle-outline" size={14} color={palette.accent} />
+            <Text variant="caption" tone="accent" style={{ flex: 1 }}>
+              Aportar genera un gasto en la categoría "Ahorro", retirar un ingreso. Tu saldo total se ajusta en consecuencia.
+            </Text>
+          </View>
+        </>
+      )}
+
+      {mode === 'form' && (
+        <>
+          <Input label="Nombre" placeholder="p.ej. Viaje a Japón" value={name} onChangeText={setName} />
+          <Input
+            label="Objetivo total"
+            keyboardType="decimal-pad"
+            placeholder="0.00"
+            value={target}
+            onChangeText={setTarget}
+          />
+          <Input
+            label="Fecha objetivo (opcional)"
+            placeholder="YYYY-MM-DD"
+            value={date}
+            onChangeText={setDate}
+            autoCapitalize="none"
+          />
+          {!isEditing && (
+            <View style={[styles.note, { backgroundColor: palette.accentSoft, borderColor: palette.accent }]}>
+              <Ionicons name="information-circle-outline" size={14} color={palette.accent} />
+              <Text variant="caption" tone="accent" style={{ flex: 1 }}>
+                La meta arranca a 0. Después podrás aportar dinero desde tu saldo, y aparecerá como movimiento en la categoría "Ahorro".
+              </Text>
+            </View>
+          )}
+        </>
+      )}
     </Sheet>
   );
 };
+
+const DirectionButton: React.FC<{
+  active: boolean;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  description: string;
+  color: string;
+  onPress: () => void;
+}> = ({ active, icon, label, description, color, onPress }) => {
+  const { palette } = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.dirBtn,
+        {
+          backgroundColor: active ? color + '15' : palette.bgElevated,
+          borderColor: active ? color : palette.borderSubtle,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={22} color={active ? color : palette.textSecondary} />
+      <View style={{ flex: 1 }}>
+        <Text variant="body" weight="semibold" tone={active ? 'primary' : 'secondary'}>
+          {label}
+        </Text>
+        <Text variant="caption" tone="muted">{description}</Text>
+      </View>
+    </Pressable>
+  );
+};
+
+const styles = StyleSheet.create({
+  balanceCard: {
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  balanceRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  balanceDivider: { width: 1, height: 36 },
+  dirRow: { flexDirection: 'row', gap: spacing.sm },
+  dirBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  quickRow: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  quickChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  note: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+  },
+});

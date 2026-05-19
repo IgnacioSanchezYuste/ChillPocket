@@ -85,7 +85,7 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
         } as any);
         toast.success('Creado');
       }
-      await fetchRecurring();
+      await fetchRecurring(true);
       onSaved?.();
       onClose();
     } catch (e) {
@@ -101,7 +101,7 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
     try {
       await recurringApi.remove(editing.id);
       toast.success('Eliminado');
-      await fetchRecurring();
+      await fetchRecurring(true);
       onSaved?.();
       onClose();
     } catch (e) {

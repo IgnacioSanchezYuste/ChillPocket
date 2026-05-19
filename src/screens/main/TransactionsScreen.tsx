@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, ScrollView, StyleSheet, RefreshControl, FlatList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -30,10 +31,12 @@ export const TransactionsScreen: React.FC = () => {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
 
-  useEffect(() => {
-    fetchTransactions();
-    if (categories.length === 0) fetchCategories();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      fetchTransactions();
+      if (categories.length === 0) fetchCategories();
+    }, [])
+  );
 
   const filtered = useMemo(() => {
     return transactions.filter((t) => {
@@ -50,7 +53,7 @@ export const TransactionsScreen: React.FC = () => {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchTransactions();
+    await fetchTransactions(undefined, true);
     setRefreshing(false);
   };
 

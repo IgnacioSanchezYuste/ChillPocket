@@ -2,6 +2,13 @@
 
 declare(strict_types=1);
 
+// Importante: evitar que warnings/notices de PHP se cuelen en el body JSON.
+// Si se mezclan con el JSON la respuesta deja de parsear en el cliente.
+// Los errores siguen registrándose en el log del servidor.
+ini_set('display_errors', '0');
+ini_set('html_errors', '0');
+error_reporting(E_ALL);
+
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -15,7 +22,9 @@ require __DIR__ . "/Conexion.php";
 
 // ================= CONFIG =================
 define('JWT_SECRET', getenv('JWT_SECRET') ?: 'cambia_este_secreto_en_produccion');
-define('JWT_EXPIRATION', 3600);
+// Antes 3600s (1h) - causaba cierre de sesión durante el uso normal.
+// 7 días es un compromiso razonable para una app personal en hosting propio.
+define('JWT_EXPIRATION', 7 * 24 * 3600);
 define('ALLOWED_METHODS', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
 define('ALLOWED_HEADERS', 'Authorization, Content-Type, Accept, Origin, X-Requested-With');
 
@@ -130,6 +139,39 @@ function monthlyEquivalent(float $amount, string $frequency): float {
         'yearly'  => $amount / 12,
         default   => $amount
     };
+}
+
+// Saldo disponible del usuario = SUM(income) - SUM(expense) sobre TODAS sus
+// transacciones. Las contribuciones a metas ya cuentan como expense, las
+// retiradas como income, así que esto refleja el dinero realmente "libre".
+function availableBalance(PDO $conn, int $userId): float {
+    $stmt = $conn->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN type='income'  THEN amount ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS balance
+        FROM transactions WHERE user_id = :u
+    ");
+    $stmt->execute([':u' => $userId]);
+    return (float)($stmt->fetch(PDO::FETCH_ASSOC)['balance'] ?? 0);
+}
+
+// Devuelve el id de la categoría sistema "Ahorro" (user_id NULL). Si no
+// existe la crea, así el front no necesita preocuparse.
+function savingsCategoryId(PDO $conn): int {
+    $stmt = $conn->prepare("
+        SELECT id FROM categories
+        WHERE user_id IS NULL AND name = 'Ahorro' AND type = 'expense'
+        LIMIT 1
+    ");
+    $stmt->execute();
+    $id = $stmt->fetchColumn();
+    if ($id) return (int)$id;
+    $ins = $conn->prepare("
+        INSERT INTO categories (user_id, name, color, icon, type)
+        VALUES (NULL, 'Ahorro', '#10B981', 'savings', 'expense')
+    ");
+    $ins->execute();
+    return (int)$conn->lastInsertId();
 }
 
 // =====================================================
@@ -281,6 +323,7 @@ $app->get('/', function (Request $request, Response $response) {
             'GET  /analytics/payment-methods?month_year=YYYY-MM',
             'GET  /analytics/trends?days=30',
             'GET  /analytics/projection',
+            'GET  /analytics/all?month_year=YYYY-MM&months=6&days=30   (combinado, 1 sola petición)',
         ]
     ]);
 });
@@ -591,7 +634,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $sql = "
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
-                   t.payment_method, t.recurring_id,
+                   t.payment_method, t.recurring_id, t.goal_id,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t
@@ -677,7 +720,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $sel = $conn->prepare("
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
-                   t.payment_method, t.recurring_id,
+                   t.payment_method, t.recurring_id, t.goal_id,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
@@ -936,6 +979,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
     // ------ SAVINGS GOALS ------
     $group->get('/savings-goals', function (Request $request, Response $response) use ($conn) {
         $jwt = $request->getAttribute('user');
+        $uid = (int)$jwt['user_id'];
         $stmt = $conn->prepare("
             SELECT id, name, target_amount, current_amount, target_date, description, color, icon,
                    is_completed, created_at, updated_at,
@@ -949,8 +993,11 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             WHERE user_id = :u
             ORDER BY is_completed ASC, target_date IS NULL, target_date ASC
         ");
-        $stmt->execute([':u' => (int)$jwt['user_id']]);
-        return jsonResponse($response, ['goals' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+        $stmt->execute([':u' => $uid]);
+        return jsonResponse($response, [
+            'goals' => $stmt->fetchAll(PDO::FETCH_ASSOC),
+            'available_balance' => round(availableBalance($conn, $uid), 2),
+        ]);
     });
 
     $group->post('/savings-goals', function (Request $request, Response $response) use ($conn) {
@@ -958,7 +1005,6 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $data = $request->getParsedBody() ?? [];
         $name   = trim((string)($data['name'] ?? ''));
         $target = isset($data['target_amount']) ? (float)$data['target_amount'] : 0;
-        $current= isset($data['current_amount']) ? (float)$data['current_amount'] : 0;
         $date   = isset($data['target_date']) && $data['target_date'] !== '' ? (string)$data['target_date'] : null;
         $desc   = isset($data['description']) ? trim((string)$data['description']) : null;
         $color  = validHexColor($data['color'] ?? null, '#10B981');
@@ -966,21 +1012,21 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         if ($name === '') return jsonResponse($response, ['error'=>true,'message'=>'Nombre obligatorio'], 400);
         if ($target <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Monto objetivo debe ser > 0'], 400);
-        if ($current < 0) return jsonResponse($response, ['error'=>true,'message'=>'Monto actual inválido'], 400);
         if ($date !== null && !validDate($date)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Fecha objetivo inválida'], 400);
         }
 
+        // Las metas siempre arrancan a 0. Para "rellenarla" el usuario debe
+        // aportar explícitamente con /contribute, que registra la transacción.
         $stmt = $conn->prepare("
             INSERT INTO savings_goals
                 (user_id, name, target_amount, current_amount, target_date, description, color, icon, is_completed)
-            VALUES (:u, :n, :t, :ca, :td, :d, :c, :i, :ic)
+            VALUES (:u, :n, :t, 0, :td, :d, :c, :i, 0)
         ");
         $stmt->execute([
             ':u'=>(int)$jwt['user_id'], ':n'=>$name, ':t'=>$target,
-            ':ca'=>$current, ':td'=>$date, ':d'=>$desc ?: null,
+            ':td'=>$date, ':d'=>$desc ?: null,
             ':c'=>$color, ':i'=>$icon ?: null,
-            ':ic'=>$current >= $target ? 1 : 0
         ]);
         return jsonResponse($response, ['success'=>true,'id'=>(int)$conn->lastInsertId()], 201);
     });
@@ -1005,11 +1051,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             if ($t <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Objetivo inválido'], 400);
             $fields[] = 'target_amount = :t'; $params[':t'] = $t;
         }
-        if (array_key_exists('current_amount', $data)) {
-            $c = (float)$data['current_amount'];
-            if ($c < 0) return jsonResponse($response, ['error'=>true,'message'=>'Monto inválido'], 400);
-            $fields[] = 'current_amount = :ca'; $params[':ca'] = $c;
-        }
+        // current_amount NO se actualiza por PUT: debe pasar por /contribute
+        // para registrar la transacción correspondiente y mantener cuadrada
+        // la contabilidad.
         if (array_key_exists('target_date', $data)) {
             $td = $data['target_date'] === null || $data['target_date'] === '' ? null : (string)$data['target_date'];
             if ($td !== null && !validDate($td)) {
@@ -1036,21 +1080,94 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         return jsonResponse($response, ['success'=>true]);
     });
 
+    // Aportar o retirar de una meta:
+    //  amount > 0  ->  aportación  (crea transacción de gasto categoría "Ahorro")
+    //  amount < 0  ->  retirada    (crea transacción de ingreso categoría "Ahorro")
+    // Invariantes:
+    //  - aportar más que el saldo disponible está bloqueado
+    //  - retirar más del current_amount de la meta está bloqueado
     $group->post('/savings-goals/{id}/contribute', function (Request $request, Response $response, array $args) use ($conn) {
         $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
+        $gid  = (int)$args['id'];
         $data = $request->getParsedBody() ?? [];
         $amount = isset($data['amount']) ? (float)$data['amount'] : 0;
         if ($amount === 0.0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
 
-        $stmt = $conn->prepare("
-            UPDATE savings_goals
-            SET current_amount = GREATEST(0, current_amount + :a),
-                is_completed = CASE WHEN current_amount + :a >= target_amount THEN 1 ELSE 0 END
-            WHERE id = :id AND user_id = :u
-        ");
-        $stmt->execute([':a'=>$amount, ':id'=>(int)$args['id'], ':u'=>(int)$jwt['user_id']]);
-        if ($stmt->rowCount() === 0) return jsonResponse($response, ['error'=>true,'message'=>'No existe'], 404);
-        return jsonResponse($response, ['success'=>true]);
+        $sel = $conn->prepare("SELECT name, current_amount, target_amount FROM savings_goals WHERE id = :id AND user_id = :u");
+        $sel->execute([':id'=>$gid, ':u'=>$uid]);
+        $goal = $sel->fetch(PDO::FETCH_ASSOC);
+        if (!$goal) return jsonResponse($response, ['error'=>true,'message'=>'No existe'], 404);
+
+        $current = (float)$goal['current_amount'];
+        if ($amount > 0) {
+            $available = availableBalance($conn, $uid);
+            if ($amount > $available + 0.001) {
+                return jsonResponse($response, [
+                    'error'=>true,
+                    'message'=>'Saldo insuficiente. Disponible: ' . number_format($available, 2)
+                ], 400);
+            }
+        } else {
+            // retirada: no puedes sacar más de lo que la meta tiene
+            if ($current + $amount < -0.001) {
+                return jsonResponse($response, [
+                    'error'=>true,
+                    'message'=>'La meta solo tiene ' . number_format($current, 2)
+                ], 400);
+            }
+        }
+
+        $catId = savingsCategoryId($conn);
+        $txType = $amount > 0 ? 'expense' : 'income';
+        $txAmount = abs($amount);
+        $txDescription = $amount > 0
+            ? 'Aportación a "' . $goal['name'] . '"'
+            : 'Retirada de "' . $goal['name'] . '"';
+
+        try {
+            $conn->beginTransaction();
+
+            $insTx = $conn->prepare("
+                INSERT INTO transactions
+                    (user_id, category_id, amount, description, type, transaction_date, notes, goal_id)
+                VALUES (:u, :c, :a, :d, :t, CURDATE(), :n, :g)
+            ");
+            $insTx->execute([
+                ':u'=>$uid, ':c'=>$catId, ':a'=>$txAmount,
+                ':d'=>$txDescription, ':t'=>$txType,
+                ':n'=>'Movimiento de meta de ahorro',
+                ':g'=>$gid,
+            ]);
+
+            $upd = $conn->prepare("
+                UPDATE savings_goals
+                SET current_amount = GREATEST(0, current_amount + :a),
+                    is_completed = CASE WHEN current_amount + :a >= target_amount THEN 1 ELSE 0 END
+                WHERE id = :id AND user_id = :u
+            ");
+            $upd->execute([':a'=>$amount, ':id'=>$gid, ':u'=>$uid]);
+
+            $conn->commit();
+        } catch (Throwable $e) {
+            if ($conn->inTransaction()) $conn->rollBack();
+            return jsonResponse($response, ['error'=>true,'message'=>'No se pudo registrar el movimiento'], 500);
+        }
+
+        // Devolver estado actualizado de la meta y nuevo balance disponible
+        $newAvail = availableBalance($conn, $uid);
+        $stmt = $conn->prepare("SELECT current_amount, target_amount FROM savings_goals WHERE id = :id");
+        $stmt->execute([':id'=>$gid]);
+        $g = $stmt->fetch(PDO::FETCH_ASSOC);
+        return jsonResponse($response, [
+            'success' => true,
+            'goal' => [
+                'id' => $gid,
+                'current_amount' => (float)$g['current_amount'],
+                'target_amount'  => (float)$g['target_amount'],
+            ],
+            'available_balance' => round($newAvail, 2),
+        ]);
     });
 
     $group->delete('/savings-goals/{id}', function (Request $request, Response $response, array $args) use ($conn) {
@@ -1335,6 +1452,210 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         return jsonResponse($response, [
             'month_year'      => $month,
             'payment_methods' => $stmt->fetchAll(PDO::FETCH_ASSOC)
+        ]);
+    });
+
+    // Endpoint combinado: devuelve TODO lo que la pantalla de analítica/dashboard
+    // necesita en una sola petición. Diseñado para reducir el nº de conexiones
+    // MySQL en hostings con cuotas estrictas (Hostinger: 500 conex/hora).
+    // Reemplaza 7 llamadas (/summary + /monthly + /categories + /category-comparison
+    // + /payment-methods + /trends + /projection) por una única consulta HTTP.
+    $group->get('/analytics/all', function (Request $request, Response $response) use ($conn) {
+        $jwt = $request->getAttribute('user');
+        $uid = (int)$jwt['user_id'];
+        $q   = $request->getQueryParams();
+        $month  = $q['month_year'] ?? date('Y-m');
+        $months = max(1, min(24, (int)($q['months']  ?? 6)));
+        $days   = max(1, min(180,(int)($q['days']    ?? 30)));
+        if (!validMonthYear($month)) {
+            return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido'], 400);
+        }
+
+        // ---- summary ----
+        $stmt = $conn->prepare("
+            SELECT
+                SUM(CASE WHEN type='income'  THEN amount ELSE 0 END) AS total_income,
+                SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS total_expense,
+                COUNT(*) AS total_transactions
+            FROM transactions
+            WHERE user_id = :u AND DATE_FORMAT(transaction_date, '%Y-%m') = :m
+        ");
+        $stmt->execute([':u'=>$uid, ':m'=>$month]);
+        $sumRow = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total_income'=>0,'total_expense'=>0,'total_transactions'=>0];
+        $totalIncome  = (float)($sumRow['total_income']  ?? 0);
+        $totalExpense = (float)($sumRow['total_expense'] ?? 0);
+        $balance      = $totalIncome - $totalExpense;
+        $savingsRatio = $totalIncome > 0 ? round(($balance / $totalIncome) * 100, 2) : 0;
+
+        $hist = $conn->prepare("
+            SELECT
+                SUM(CASE WHEN type='income'  THEN amount ELSE 0 END)
+              - SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS net_total
+            FROM transactions WHERE user_id = :u
+        ");
+        $hist->execute([':u'=>$uid]);
+        $netTotal = (float)($hist->fetch(PDO::FETCH_ASSOC)['net_total'] ?? 0);
+
+        $g = $conn->prepare("SELECT COALESCE(SUM(current_amount),0) AS saved FROM savings_goals WHERE user_id = :u");
+        $g->execute([':u'=>$uid]);
+        $totalSaved = (float)($g->fetch(PDO::FETCH_ASSOC)['saved'] ?? 0);
+
+        $rec = $conn->prepare("
+            SELECT type, frequency, amount FROM recurring_expenses
+            WHERE user_id = :u AND is_active = 1
+        ");
+        $rec->execute([':u'=>$uid]);
+        $rExp = 0.0; $rInc = 0.0;
+        foreach ($rec->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $eq = monthlyEquivalent((float)$r['amount'], (string)$r['frequency']);
+            if ($r['type'] === 'income') $rInc += $eq; else $rExp += $eq;
+        }
+
+        $prev = $conn->prepare("
+            SELECT
+                SUM(CASE WHEN type='income'  THEN amount ELSE 0 END) AS total_income,
+                SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS total_expense
+            FROM transactions
+            WHERE user_id = :u AND DATE_FORMAT(transaction_date, '%Y-%m') =
+                DATE_FORMAT(DATE_SUB(STR_TO_DATE(CONCAT(:m,'-01'), '%Y-%m-%d'), INTERVAL 1 MONTH), '%Y-%m')
+        ");
+        $prev->execute([':u'=>$uid, ':m'=>$month]);
+        $prevRow = $prev->fetch(PDO::FETCH_ASSOC) ?: ['total_income'=>0,'total_expense'=>0];
+
+        $summary = [
+            'month_year'           => $month,
+            'total_income'         => round($totalIncome, 2),
+            'total_expense'        => round($totalExpense, 2),
+            'balance'              => round($balance, 2),
+            'savings_ratio'        => $savingsRatio,
+            'total_transactions'   => (int)($sumRow['total_transactions'] ?? 0),
+            'net_total_historical' => round($netTotal, 2),
+            'total_saved_in_goals' => round($totalSaved, 2),
+            'recurring_monthly'    => [
+                'expense' => round($rExp, 2),
+                'income'  => round($rInc, 2),
+                'net'     => round($rInc - $rExp, 2)
+            ],
+            'previous' => [
+                'total_income'  => round((float)$prevRow['total_income'], 2),
+                'total_expense' => round((float)$prevRow['total_expense'], 2),
+            ],
+        ];
+
+        // ---- monthly ----
+        $st = $conn->prepare("
+            SELECT DATE_FORMAT(transaction_date, '%Y-%m') AS month_year,
+                   SUM(CASE WHEN type='income'  THEN amount ELSE 0 END) AS income,
+                   SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS expense
+            FROM transactions
+            WHERE user_id = :u
+              AND transaction_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL :m MONTH)
+            GROUP BY month_year ORDER BY month_year ASC
+        ");
+        $st->bindValue(':u', $uid, PDO::PARAM_INT);
+        $st->bindValue(':m', $months - 1, PDO::PARAM_INT);
+        $st->execute();
+        $monthly = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        // ---- categories (mes seleccionado) ----
+        $st = $conn->prepare("
+            SELECT t.category_id,
+                   COALESCE(c.name, 'Sin categoría') AS category_name,
+                   COALESCE(c.color, '#6B7280') AS category_color,
+                   c.icon AS category_icon,
+                   t.type, SUM(t.amount) AS total, COUNT(*) AS count
+            FROM transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            WHERE t.user_id = :u AND DATE_FORMAT(t.transaction_date, '%Y-%m') = :m
+            GROUP BY t.category_id, t.type, c.name, c.color, c.icon
+            ORDER BY total DESC
+        ");
+        $st->execute([':u'=>$uid, ':m'=>$month]);
+        $categories = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        // ---- category-comparison ----
+        $st = $conn->prepare("
+            SELECT DATE_FORMAT(t.transaction_date, '%Y-%m') AS month_year,
+                   t.category_id,
+                   COALESCE(c.name, 'Sin categoría') AS category_name,
+                   COALESCE(c.color, '#6B7280') AS category_color,
+                   SUM(t.amount) AS total
+            FROM transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            WHERE t.user_id = :u AND t.type = 'expense'
+              AND t.transaction_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL :m MONTH)
+            GROUP BY month_year, t.category_id, c.name, c.color
+            ORDER BY month_year ASC, total DESC
+        ");
+        $st->bindValue(':u', $uid, PDO::PARAM_INT);
+        $st->bindValue(':m', $months - 1, PDO::PARAM_INT);
+        $st->execute();
+        $comparison = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        // ---- payment methods ----
+        $st = $conn->prepare("
+            SELECT COALESCE(payment_method, 'other') AS payment_method,
+                   SUM(amount) AS total, COUNT(*) AS count
+            FROM transactions
+            WHERE user_id = :u AND type = 'expense'
+              AND DATE_FORMAT(transaction_date, '%Y-%m') = :m
+            GROUP BY payment_method
+            ORDER BY total DESC
+        ");
+        $st->execute([':u'=>$uid, ':m'=>$month]);
+        $paymentMethods = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        // ---- trends ----
+        $st = $conn->prepare("
+            SELECT transaction_date,
+                   SUM(CASE WHEN type='income'  THEN amount ELSE 0 END) AS income,
+                   SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS expense
+            FROM transactions
+            WHERE user_id = :u AND transaction_date >= DATE_SUB(CURDATE(), INTERVAL :d DAY)
+            GROUP BY transaction_date ORDER BY transaction_date ASC
+        ");
+        $st->bindValue(':u', $uid, PDO::PARAM_INT);
+        $st->bindValue(':d', $days - 1, PDO::PARAM_INT);
+        $st->execute();
+        $trends = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        // ---- projection ----
+        $st = $conn->prepare("
+            SELECT AVG(monthly_income) AS avg_income, AVG(monthly_expense) AS avg_expense
+            FROM (
+                SELECT DATE_FORMAT(transaction_date, '%Y-%m') AS m,
+                       SUM(CASE WHEN type='income'  THEN amount ELSE 0 END) AS monthly_income,
+                       SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS monthly_expense
+                FROM transactions
+                WHERE user_id = :u
+                  AND transaction_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 3 MONTH)
+                GROUP BY m
+            ) AS sub
+        ");
+        $st->execute([':u'=>$uid]);
+        $pr = $st->fetch(PDO::FETCH_ASSOC) ?: ['avg_income'=>0,'avg_expense'=>0];
+        $avgIncome  = (float)($pr['avg_income']  ?? 0);
+        $avgExpense = (float)($pr['avg_expense'] ?? 0);
+        $monthlyNet = ($avgIncome + $rInc) - ($avgExpense + $rExp);
+
+        $projection = [
+            'avg_monthly_income'    => round($avgIncome, 2),
+            'avg_monthly_expense'   => round($avgExpense, 2),
+            'recurring_monthly_in'  => round($rInc, 2),
+            'recurring_monthly_out' => round($rExp, 2),
+            'projected_monthly_net' => round($monthlyNet, 2),
+            'projected_6_months'    => round($monthlyNet * 6, 2),
+            'projected_12_months'   => round($monthlyNet * 12, 2),
+        ];
+
+        return jsonResponse($response, [
+            'summary'             => $summary,
+            'monthly'             => $monthly,
+            'categories'          => $categories,
+            'category_comparison' => $comparison,
+            'payment_methods'     => $paymentMethods,
+            'trends'              => $trends,
+            'projection'          => $projection,
         ]);
     });
 

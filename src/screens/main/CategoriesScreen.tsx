@@ -36,7 +36,7 @@ export const CategoriesScreen: React.FC = () => {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchCategories();
+    await fetchCategories(true);
     setRefreshing(false);
   };
 
@@ -65,7 +65,7 @@ export const CategoriesScreen: React.FC = () => {
       } else {
         await categoriesApi.create({ name: name.trim(), color, type });
       }
-      await fetchCategories();
+      await fetchCategories(true);
       toast.success('Guardada');
       setSheetOpen(false);
     } catch (e) {
@@ -84,7 +84,7 @@ export const CategoriesScreen: React.FC = () => {
         onPress: async () => {
           try {
             await categoriesApi.remove(c.id);
-            await fetchCategories();
+            await fetchCategories(true);
             toast.success('Eliminada');
           } catch (e) {
             toast.error(apiError(e));

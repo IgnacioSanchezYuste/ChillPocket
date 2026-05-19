@@ -24,7 +24,7 @@ export const SettingsScreen: React.FC = () => {
   const onCurrencyChange = async (currency: 'EUR' | 'USD' | 'GBP') => {
     try {
       const updated = await authApi.updateMe({ currency });
-      setUser(updated);
+      if (updated) setUser(updated);
       toast.success('Moneda actualizada');
     } catch (e) {
       toast.error(apiError(e));

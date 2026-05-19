@@ -39,14 +39,14 @@ export const RecurringScreen: React.FC = () => {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchRecurring();
+    await fetchRecurring(true);
     setRefreshing(false);
   };
 
   const onToggle = async (r: Recurring) => {
     try {
       await recurringApi.toggle(r.id);
-      await fetchRecurring();
+      await fetchRecurring(true);
     } catch (e) {
       toast.error(apiError(e));
     }

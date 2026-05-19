@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, View, StyleSheet, RefreshControl, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-chart-kit';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -28,8 +28,10 @@ export const DashboardScreen: React.FC = () => {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
 
+  // Refrescar tanto en montaje como cada vez que la pantalla recibe foco
+  useFocusEffect(useCallback(() => { refreshAll(); }, []));
+
   useEffect(() => {
-    refreshAll();
     const id = setInterval(() => {
       fetchAnalytics();
       fetchTransactions();
@@ -39,7 +41,7 @@ export const DashboardScreen: React.FC = () => {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await refreshAll();
+    await refreshAll(true);
     setRefreshing(false);
   };
 
@@ -64,7 +66,7 @@ export const DashboardScreen: React.FC = () => {
         <ScreenHeader
           title={`Hola, ${user?.name?.split(' ')[0] || ''}`}
           subtitle={monthLabel(summary?.month_year || currentMonthYear())}
-          right={<BrandLogo size={40} />}
+          right={<BrandLogo size={44} />}
         />
 
         <View style={{ paddingHorizontal: spacing.lg }}>

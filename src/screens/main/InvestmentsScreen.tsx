@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet, Dimensions, Pressable } from 'react-native';
+import { View, ScrollView, StyleSheet, Dimensions, Pressable, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-chart-kit';
@@ -19,10 +19,17 @@ type Frequency = 'weekly' | 'monthly' | 'yearly';
 type Scenario = {
   id: string;
   name: string;
+  shortName: string;
   rate: number;
   color: string;
   enabled: boolean;
 };
+
+const SCENARIO_DEFAULTS: Scenario[] = [
+  { id: 'invest',      name: 'Mi inversión',      shortName: 'Inversión',   rate: 7,   color: '#6366F1', enabled: true },
+  { id: 'remunerated', name: 'Cuenta remunerada', shortName: 'Remunerada',  rate: 2.5, color: '#10B981', enabled: true },
+  { id: 'savings',     name: 'Cuenta ahorro',     shortName: 'Ahorro',      rate: 0.5, color: '#F59E0B', enabled: true },
+];
 
 function compoundProjection(
   initial: number,
@@ -39,7 +46,6 @@ function compoundProjection(
   let balance = initial;
   let contributed = initial;
 
-  // Punto inicial
   points.push({ year: 0, total: balance, contributed, interest: 0 });
 
   for (let i = 1; i <= totalPeriods; i++) {
@@ -69,12 +75,7 @@ export const InvestmentsScreen: React.FC = () => {
   const [frequency, setFrequency] = useState<Frequency>('monthly');
   const [years, setYears] = useState('20');
   const [rate, setRate] = useState('7');
-  const [scenarios, setScenarios] = useState<Scenario[]>([
-    { id: 'invest', name: 'Mi inversión', rate: 7, color: '#6366F1', enabled: true },
-    { id: 'remunerated', name: 'Cuenta remunerada', rate: 2.5, color: '#10B981', enabled: true },
-    { id: 'savings', name: 'Cuenta ahorro', rate: 0.5, color: '#F59E0B', enabled: true },
-  ]);
-  const [computed, setComputed] = useState(false);
+  const [scenarios, setScenarios] = useState<Scenario[]>(SCENARIO_DEFAULTS);
 
   const updateScenario = (id: string, patch: Partial<Scenario>) => {
     setScenarios((arr) => arr.map((s) => (s.id === id ? { ...s, ...patch } : s)));
@@ -83,7 +84,6 @@ export const InvestmentsScreen: React.FC = () => {
   const onCompute = () => {
     const r = parseFloat(rate.replace(',', '.'));
     if (Number.isFinite(r)) updateScenario('invest', { rate: r });
-    setComputed(true);
   };
 
   const data = useMemo(() => {
@@ -96,15 +96,14 @@ export const InvestmentsScreen: React.FC = () => {
         scenario: s,
         points: compoundProjection(init, rec, frequency, s.rate, yr),
       }));
-  }, [scenarios, initial, recurring, frequency, years, computed]);
+  }, [scenarios, initial, recurring, frequency, years]);
 
   const labels = useMemo(() => {
     if (!data[0]) return [];
     return data[0].points.map((p) => (p.year === 0 ? '0' : `${p.year}a`));
   }, [data]);
 
-  // Reducimos número de labels para que no se solapen
-  const labelStep = Math.max(1, Math.ceil(labels.length / 8));
+  const labelStep = Math.max(1, Math.ceil(labels.length / 6));
   const sparseLabels = labels.map((l, i) => (i % labelStep === 0 ? l : ''));
 
   const datasets = useMemo(
@@ -112,13 +111,24 @@ export const InvestmentsScreen: React.FC = () => {
       data.map((d) => ({
         data: d.points.map((p) => Math.round(p.total)),
         color: () => d.scenario.color,
-        strokeWidth: 2,
+        strokeWidth: 2.5,
       })),
     [data]
   );
 
   const primary = data.find((d) => d.scenario.id === 'invest');
   const primaryFinal = primary?.points[primary.points.length - 1];
+  const primaryColor = primary?.scenario.color || palette.accent;
+
+  // Para la sección "por años" mostramos hitos clave: 1, 5, 10, 15, 20...
+  const milestoneYears = useMemo(() => {
+    const yr = Math.max(1, Math.min(60, parseInt(years, 10) || 1));
+    const step = yr <= 10 ? 1 : yr <= 25 ? 5 : 10;
+    const list: number[] = [];
+    for (let y = step; y <= yr; y += step) list.push(y);
+    if (list[list.length - 1] !== yr) list.push(yr);
+    return list;
+  }, [years]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
@@ -126,32 +136,28 @@ export const InvestmentsScreen: React.FC = () => {
         <ScreenHeader title="Inversiones" subtitle="Calculadora de interés compuesto" showBack />
 
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+          {/* Parámetros */}
           <Card>
             <Text variant="h2">Parámetros</Text>
             <View style={{ marginTop: spacing.md, gap: spacing.md }}>
-              <View style={styles.twoCol}>
-                <View style={{ flex: 1 }}>
-                  <Input
-                    label="Inversión inicial"
-                    keyboardType="decimal-pad"
-                    placeholder="0.00"
-                    value={initial}
-                    onChangeText={setInitial}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Input
-                    label="Aportación periódica"
-                    keyboardType="decimal-pad"
-                    placeholder="0.00"
-                    value={recurring}
-                    onChangeText={setRecurring}
-                  />
-                </View>
-              </View>
-
+              <Input
+                label="Inversión inicial"
+                keyboardType="decimal-pad"
+                placeholder="0.00"
+                value={initial}
+                onChangeText={setInitial}
+                leading={<Ionicons name="cash-outline" size={16} color={palette.textSecondary} />}
+              />
+              <Input
+                label="Aportación periódica"
+                keyboardType="decimal-pad"
+                placeholder="0.00"
+                value={recurring}
+                onChangeText={setRecurring}
+                leading={<Ionicons name="add-circle-outline" size={16} color={palette.textSecondary} />}
+              />
               <View style={{ gap: 6 }}>
-                <Text variant="label" tone="secondary">Frecuencia de aportación</Text>
+                <Text variant="label" tone="secondary">Frecuencia</Text>
                 <SegmentedControl
                   options={[
                     { value: 'weekly', label: 'Semanal' },
@@ -162,67 +168,101 @@ export const InvestmentsScreen: React.FC = () => {
                   onChange={setFrequency}
                 />
               </View>
-
               <View style={styles.twoCol}>
                 <View style={{ flex: 1 }}>
                   <Input
-                    label="Rentabilidad anual %"
+                    label="Rentabilidad anual"
                     keyboardType="decimal-pad"
                     placeholder="7"
                     value={rate}
                     onChangeText={setRate}
+                    trailing={<Text variant="label" tone="muted">%</Text>}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Input
-                    label="Años a proyectar"
+                    label="Años"
                     keyboardType="number-pad"
                     placeholder="20"
                     value={years}
                     onChangeText={setYears}
+                    trailing={<Text variant="label" tone="muted">años</Text>}
                   />
                 </View>
               </View>
-
-              <Button title="Calcular" onPress={onCompute} size="lg" />
+              <Button title="Recalcular" onPress={onCompute} size="lg" />
             </View>
           </Card>
 
+          {/* Resumen final (3 tarjetas verticales en móvil) */}
           {primaryFinal && (
-            <View style={styles.kpiRow}>
-              <Card padding="md" style={{ flex: 1 }}>
-                <Text variant="label" tone="secondary">Valor final</Text>
-                <Text variant="h1" tabular tone="success" style={{ marginTop: spacing.xs }}>
-                  {formatMoney(primaryFinal.total, currency)}
-                </Text>
-              </Card>
-              <Card padding="md" style={{ flex: 1 }}>
-                <Text variant="label" tone="secondary">Intereses</Text>
-                <Text variant="h1" tabular tone="primary" style={{ marginTop: spacing.xs }}>
-                  {formatMoney(primaryFinal.interest, currency)}
-                </Text>
-              </Card>
-              <Card padding="md" style={{ flex: 1 }}>
-                <Text variant="label" tone="secondary">Aportado</Text>
-                <Text variant="h1" tabular style={{ marginTop: spacing.xs }}>
-                  {formatMoney(primaryFinal.contributed, currency)}
-                </Text>
-              </Card>
+            <View style={{ gap: spacing.sm }}>
+              <View
+                style={[
+                  styles.headlineCard,
+                  { backgroundColor: primaryColor + '15', borderColor: primaryColor },
+                ]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text variant="label" tone="secondary">Valor final · {years} años</Text>
+                  <Text variant="display" tabular weight="bold" style={{ color: primaryColor, marginTop: 2 }}>
+                    {formatMoney(primaryFinal.total, currency)}
+                  </Text>
+                  <Text variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                    {primary?.scenario.name} al {primary?.scenario.rate}% anual
+                  </Text>
+                </View>
+                <View style={[styles.headlineIcon, { backgroundColor: primaryColor + '22' }]}>
+                  <Ionicons name="trending-up" size={26} color={primaryColor} />
+                </View>
+              </View>
+
+              <View style={styles.kpiRow}>
+                <View
+                  style={[
+                    styles.kpiSmall,
+                    { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="layers-outline" size={14} color={palette.textMuted} />
+                    <Text variant="caption" tone="muted">Aportado</Text>
+                  </View>
+                  <Text variant="h2" tabular weight="semibold" style={{ marginTop: 2 }}>
+                    {formatMoney(primaryFinal.contributed, currency)}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.kpiSmall,
+                    { backgroundColor: palette.successSoft, borderColor: palette.success },
+                  ]}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="sparkles-outline" size={14} color={palette.success} />
+                    <Text variant="caption" tone="success">Intereses</Text>
+                  </View>
+                  <Text variant="h2" tabular weight="semibold" tone="success" style={{ marginTop: 2 }}>
+                    {formatMoney(primaryFinal.interest, currency)}
+                  </Text>
+                </View>
+              </View>
             </View>
           )}
 
+          {/* Gráfica + leyenda con colores */}
           {datasets.length > 0 && labels.length > 1 && (
             <Card padding="md">
               <Text variant="h2">Crecimiento del capital</Text>
-              <Text variant="caption" tone="muted">Cada punto representa el saldo al finalizar ese año</Text>
+              <Text variant="caption" tone="muted">Saldo al cierre de cada año</Text>
+
               <LineChart
                 data={{
                   labels: sparseLabels,
                   datasets,
-                  legend: data.map((d) => d.scenario.name),
                 }}
                 width={screenW - spacing.lg * 2 - spacing.md * 2}
-                height={240}
+                height={220}
                 withShadow={false}
                 withDots
                 bezier
@@ -238,86 +278,131 @@ export const InvestmentsScreen: React.FC = () => {
                 }}
                 style={{ marginTop: spacing.sm, marginLeft: -8 }}
               />
+
+              <View style={styles.legend}>
+                {data.map((d) => (
+                  <View key={d.scenario.id} style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: d.scenario.color }]} />
+                    <Text variant="caption" tone="secondary">
+                      {d.scenario.shortName} · {d.scenario.rate}%
+                    </Text>
+                  </View>
+                ))}
+              </View>
             </Card>
           )}
 
+          {/* Escenarios configurables */}
           <Card>
-            <Text variant="h2">Escenarios de comparación</Text>
-            <Text variant="caption" tone="muted">Activa/desactiva escenarios y ajusta su rentabilidad</Text>
+            <Text variant="h2">Escenarios</Text>
+            <Text variant="caption" tone="muted">Toca el círculo para activar · ajusta la rentabilidad</Text>
             <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
               {scenarios.map((s) => (
                 <View
                   key={s.id}
-                  style={[styles.scenarioRow, { borderColor: palette.borderSubtle, backgroundColor: palette.bgElevated }]}
+                  style={[
+                    styles.scenarioCard,
+                    {
+                      borderColor: s.enabled ? s.color : palette.borderSubtle,
+                      backgroundColor: s.enabled ? s.color + '10' : palette.bgElevated,
+                    },
+                  ]}
                 >
-                  <Pressable onPress={() => updateScenario(s.id, { enabled: !s.enabled })} hitSlop={6}>
-                    <View
-                      style={[
-                        styles.checkbox,
-                        {
-                          borderColor: s.enabled ? s.color : palette.borderStrong,
-                          backgroundColor: s.enabled ? s.color : 'transparent',
-                        },
-                      ]}
-                    >
-                      {s.enabled && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  <View style={styles.scenarioHeader}>
+                    <Pressable onPress={() => updateScenario(s.id, { enabled: !s.enabled })} hitSlop={8}>
+                      <View
+                        style={[
+                          styles.checkbox,
+                          {
+                            borderColor: s.enabled ? s.color : palette.borderStrong,
+                            backgroundColor: s.enabled ? s.color : 'transparent',
+                          },
+                        ]}
+                      >
+                        {s.enabled && <Ionicons name="checkmark" size={14} color="#fff" />}
+                      </View>
+                    </Pressable>
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text variant="body" weight="semibold">{s.name}</Text>
+                      <Text variant="caption" tone="muted">Rentabilidad anual</Text>
                     </View>
-                  </Pressable>
-                  <View style={{ flex: 1, gap: 2 }}>
-                    <Text variant="body" weight="semibold">{s.name}</Text>
-                    <Text variant="caption" tone="muted">Color: {s.color}</Text>
+                    <Text variant="h2" tabular weight="bold" style={{ color: s.color }}>
+                      {s.rate}%
+                    </Text>
                   </View>
-                  <View style={{ width: 80 }}>
-                    <Input
+                  <View style={[styles.rateEditor, { borderColor: palette.borderSubtle, backgroundColor: palette.bgSurface }]}>
+                    <Pressable
+                      onPress={() =>
+                        updateScenario(s.id, { rate: Math.max(0, Number((s.rate - 0.5).toFixed(2))) })
+                      }
+                      hitSlop={6}
+                      style={styles.stepBtn}
+                    >
+                      <Ionicons name="remove" size={18} color={palette.textPrimary} />
+                    </Pressable>
+                    <TextInput
                       keyboardType="decimal-pad"
                       value={String(s.rate)}
                       onChangeText={(t) => {
                         const v = parseFloat(t.replace(',', '.'));
                         updateScenario(s.id, { rate: Number.isFinite(v) ? v : 0 });
                       }}
-                      placeholder="%"
-                      style={{ textAlign: 'right' }}
+                      style={[styles.rateText, { color: palette.textPrimary }]}
+                      placeholder="0"
+                      placeholderTextColor={palette.textMuted}
+                      selectionColor={s.color}
                     />
+                    <Text variant="body" tone="muted">%</Text>
+                    <Pressable
+                      onPress={() => updateScenario(s.id, { rate: Number((s.rate + 0.5).toFixed(2)) })}
+                      hitSlop={6}
+                      style={styles.stepBtn}
+                    >
+                      <Ionicons name="add" size={18} color={palette.textPrimary} />
+                    </Pressable>
                   </View>
                 </View>
               ))}
             </View>
           </Card>
 
-          {data.length > 0 && data[0].points.length > 0 && (
+          {/* Hitos por años */}
+          {data.length > 0 && data[0].points.length > 1 && (
             <Card>
-              <Text variant="h2">Tabla por años</Text>
-              <View style={{ marginTop: spacing.sm }}>
-                <View style={[styles.tableHeader, { borderBottomColor: palette.borderSubtle }]}>
-                  <Text variant="caption" tone="muted" style={{ flex: 0.6 }}>Año</Text>
-                  {data.map((d) => (
-                    <Text
-                      key={d.scenario.id}
-                      variant="caption"
-                      tone="muted"
-                      style={{ flex: 1, textAlign: 'right' }}
-                      numberOfLines={1}
-                    >
-                      {d.scenario.name}
-                    </Text>
-                  ))}
-                </View>
-                {data[0].points.map((_, idx) => (
-                  <View key={idx} style={[styles.tableRow, { borderBottomColor: palette.borderSubtle }]}>
-                    <Text variant="label" weight="medium" style={{ flex: 0.6 }}>
-                      {data[0].points[idx].year}
-                    </Text>
-                    {data.map((d) => (
-                      <Text
-                        key={d.scenario.id}
-                        variant="label"
-                        tabular
-                        style={{ flex: 1, textAlign: 'right' }}
-                        numberOfLines={1}
-                      >
-                        {formatMoney(d.points[idx]?.total ?? 0, currency)}
-                      </Text>
-                    ))}
+              <Text variant="h2">Año a año</Text>
+              <Text variant="caption" tone="muted">Saldo al cierre de cada hito</Text>
+              <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
+                {milestoneYears.map((y) => (
+                  <View
+                    key={y}
+                    style={[styles.yearCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}
+                  >
+                    <View style={styles.yearHeader}>
+                      <Ionicons name="time-outline" size={14} color={palette.textMuted} />
+                      <Text variant="label" weight="semibold">Año {y}</Text>
+                    </View>
+                    <View style={{ marginTop: spacing.sm, gap: 6 }}>
+                      {data.map((d) => {
+                        const point = d.points.find((p) => p.year === y);
+                        if (!point) return null;
+                        return (
+                          <View key={d.scenario.id} style={styles.scenarioLine}>
+                            <View style={[styles.scenarioDot, { backgroundColor: d.scenario.color }]} />
+                            <Text variant="label" tone="secondary" style={{ flex: 1 }} numberOfLines={1}>
+                              {d.scenario.shortName}
+                            </Text>
+                            <Text
+                              variant="body"
+                              weight="semibold"
+                              tabular
+                              style={{ color: d.scenario.color }}
+                            >
+                              {formatMoney(point.total, currency)}
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
                   </View>
                 ))}
               </View>
@@ -331,14 +416,47 @@ export const InvestmentsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   twoCol: { flexDirection: 'row', gap: spacing.md },
+  headlineCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    gap: spacing.md,
+  },
+  headlineIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   kpiRow: { flexDirection: 'row', gap: spacing.sm },
-  scenarioRow: {
+  kpiSmall: {
+    flex: 1,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  legend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    marginTop: spacing.md,
+    justifyContent: 'center',
+  },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  scenarioCard: {
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+  },
+  scenarioHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.sm,
-    borderWidth: 1,
   },
   checkbox: {
     width: 22,
@@ -348,16 +466,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tableHeader: {
+  rateEditor: {
     flexDirection: 'row',
-    paddingBottom: spacing.sm,
-    borderBottomWidth: 1,
-    gap: spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
   },
-  tableRow: {
-    flexDirection: 'row',
-    paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    gap: spacing.sm,
+  stepBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
   },
+  rateText: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '600',
+    paddingVertical: 6,
+  },
+  yearCard: {
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  yearHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  scenarioLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  scenarioDot: { width: 8, height: 8, borderRadius: 4 },
 });

@@ -38,6 +38,9 @@ export const TransactionRow: React.FC<Props> = ({ tx, currency, onPress }) => {
           {tx.recurring_id !== null && (
             <Ionicons name="repeat" size={12} color={palette.textMuted} />
           )}
+          {tx.goal_id !== null && (
+            <Ionicons name="flag" size={12} color={palette.accent} />
+          )}
         </View>
         <View style={styles.metaRow}>
           <Text variant="caption" tone="muted" numberOfLines={1}>
