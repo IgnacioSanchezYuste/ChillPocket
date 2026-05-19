@@ -102,12 +102,27 @@ export const DashboardScreen: React.FC = () => {
               </View>
               <View style={[styles.divider, { backgroundColor: palette.borderSubtle }]} />
               <View style={styles.balanceCol}>
-                <Text variant="caption" tone="muted">Ahorrado</Text>
+                <Text variant="caption" tone="muted">Libre</Text>
                 <Text variant="body" weight="semibold" tabular>
                   {summary?.savings_ratio ?? 0}%
                 </Text>
               </View>
             </View>
+            {(summary?.saved_this_month ?? 0) !== 0 && (
+              <View style={[styles.savedRow, { borderTopColor: palette.borderSubtle }]}>
+                <Ionicons name="flag" size={14} color={palette.accent} />
+                <Text variant="caption" tone="secondary">Ahorrado este mes</Text>
+                <Text
+                  variant="caption"
+                  weight="semibold"
+                  tabular
+                  tone={(summary?.saved_this_month ?? 0) >= 0 ? 'accent' : 'danger'}
+                  style={{ marginLeft: 'auto' }}
+                >
+                  {formatMoney(summary?.saved_this_month ?? 0, currency)}
+                </Text>
+              </View>
+            )}
           </Card>
         </View>
 
@@ -245,4 +260,12 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.sm,
   },
   sectionHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  savedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+  },
 });

@@ -13,6 +13,7 @@ type AuthState = {
   bootstrapped: boolean;
   bootstrap: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
+  loginWithGoogle: (idToken: string) => Promise<void>;
   register: (data: { name: string; email: string; password: string; currency?: string }) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -125,6 +126,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const res = await authApi.register(data);
       assertAuthResponse(res, 'register');
+      await AsyncStorage.setItem(TOKEN_KEY, res.token);
+      await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
+      set({ token: res.token, user: res.user });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  loginWithGoogle: async (idToken: string) => {
+    set({ loading: true });
+    try {
+      const res = await authApi.google(idToken);
+      assertAuthResponse(res, 'login');
       await AsyncStorage.setItem(TOKEN_KEY, res.token);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
       set({ token: res.token, user: res.user });

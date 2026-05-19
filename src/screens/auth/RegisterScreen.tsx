@@ -8,6 +8,7 @@ import { Text } from '../../components/Text';
 import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
 import { BrandLogo } from '../../components/BrandLogo';
+import { GoogleButton } from '../../components/GoogleButton';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
 import { apiError } from '../../api/http';
@@ -81,6 +82,14 @@ export const RegisterScreen: React.FC<Props> = ({ onGoToLogin }) => {
             </View>
 
             <Button title="Crear cuenta" loading={loading} onPress={onSubmit} size="lg" />
+
+            <View style={styles.dividerRow}>
+              <View style={[styles.dividerLine, { backgroundColor: palette.borderSubtle }]} />
+              <Text variant="caption" tone="muted">o</Text>
+              <View style={[styles.dividerLine, { backgroundColor: palette.borderSubtle }]} />
+            </View>
+
+            <GoogleButton label="Crear cuenta con Google" />
           </View>
 
           <View style={styles.footer}>
@@ -110,4 +119,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.xs,
   },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginVertical: spacing.sm,
+  },
+  dividerLine: { flex: 1, height: 1 },
 });

@@ -108,12 +108,12 @@ export const SettingsScreen: React.FC = () => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `finanzas-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `chillpocket-${new Date().toISOString().slice(0, 10)}.json`;
         a.click();
         URL.revokeObjectURL(url);
         toast.success('Descarga iniciada');
       } else {
-        await Share.share({ message: json, title: 'Backup Finanzas' });
+        await Share.share({ message: json, title: 'Backup ChillPocket' });
       }
     } catch (e) {
       toast.error(apiError(e, 'No se pudo exportar'));
@@ -192,7 +192,7 @@ export const SettingsScreen: React.FC = () => {
           <View style={{ marginTop: spacing.xl }}>
             <Button title="Cerrar sesión" variant="secondary" onPress={onLogout} />
           </View>
-          <Text variant="caption" tone="muted" align="center">Finanzas v1.1.0</Text>
+          <Text variant="caption" tone="muted" align="center">ChillPocket v1.1.0</Text>
         </View>
       </ScrollView>
 

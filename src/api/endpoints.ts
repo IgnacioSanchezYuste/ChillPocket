@@ -29,6 +29,9 @@ export const authApi = {
     http.put<{ success: true; user: User }>('/me', data).then((r) => r.data.user),
   changePassword: (current_password: string, new_password: string) =>
     http.put('/me/password', { current_password, new_password }).then((r) => r.data),
+  /** Intercambia un id_token de Google por nuestro JWT + user. */
+  google: (id_token: string) =>
+    http.post<AuthResponse>('/auth/google', { id_token }).then((r) => r.data),
 };
 
 // -------- CATEGORIES --------

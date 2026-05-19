@@ -92,4 +92,20 @@ WHERE NOT EXISTS (
     WHERE `user_id` IS NULL AND `name` = 'Ahorro' AND `type` = 'expense'
 );
 
+-- 4) USERS: identificador de Google ("sub" del ID token) para login con Google
+ALTER TABLE `users`
+    ADD COLUMN IF NOT EXISTS `google_sub` VARCHAR(64) DEFAULT NULL AFTER `avatar_url`;
+
+SET @has_gsub_idx := (
+    SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'users'
+      AND INDEX_NAME   = 'uniq_google_sub'
+);
+SET @sql := IF(@has_gsub_idx = 0,
+    'ALTER TABLE `users` ADD UNIQUE KEY `uniq_google_sub` (`google_sub`)',
+    'SELECT "uniq_google_sub ya existe" AS info'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 COMMIT;

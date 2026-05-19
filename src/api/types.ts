@@ -98,6 +98,8 @@ export type AnalyticsSummary = {
   total_saved_in_goals: number;
   recurring_monthly: { expense: number; income: number; net: number };
   previous: { total_income: number; total_expense: number };
+  /** Suma neta de movimientos de metas en el mes: aportes - retiradas. */
+  saved_this_month: number;
 };
 
 export type MonthlyPoint = { month_year: string; income: number; expense: number };

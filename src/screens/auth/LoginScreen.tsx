@@ -9,6 +9,7 @@ import { Text } from '../../components/Text';
 import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
 import { BrandLogo } from '../../components/BrandLogo';
+import { GoogleButton } from '../../components/GoogleButton';
 import { useToast } from '../../components/Toast';
 import { apiError, API_URL } from '../../api/http';
 import { validateEmail, validatePassword } from '../../utils/validators';
@@ -74,6 +75,14 @@ export const LoginScreen: React.FC<Props> = ({ onGoToRegister }) => {
               }
             />
             <Button title="Iniciar sesión" loading={loading} onPress={onSubmit} size="lg" />
+
+            <View style={styles.dividerRow}>
+              <View style={[styles.dividerLine, { backgroundColor: palette.borderSubtle }]} />
+              <Text variant="caption" tone="muted">o</Text>
+              <View style={[styles.dividerLine, { backgroundColor: palette.borderSubtle }]} />
+            </View>
+
+            <GoogleButton />
           </View>
 
           <View style={styles.footer}>
@@ -106,4 +115,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.xs,
   },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginVertical: spacing.sm,
+  },
+  dividerLine: { flex: 1, height: 1 },
 });

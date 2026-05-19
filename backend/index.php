@@ -168,6 +168,58 @@ function availableBalance(PDO $conn, int $userId): float {
     return (float)($stmt->fetch(PDO::FETCH_ASSOC)['balance'] ?? 0);
 }
 
+// =====================================================
+// GOOGLE OAUTH · verificación de ID token
+// =====================================================
+// Verifica un ID token de Google contra las claves públicas (JWKS).
+// No depende de google/apiclient: usamos firebase/php-jwt (ya instalada
+// vía composer para nuestro propio JWT) y nos descargamos las claves
+// públicas con cache simple.
+//
+// Devuelve el payload decodificado (array con sub, email, name, ...)
+// o null si la verificación falla por cualquier motivo.
+function verifyGoogleIdToken(string $idToken): ?array {
+    // 1. Comprobar formato básico antes de hablar con Google
+    $parts = explode('.', $idToken);
+    if (count($parts) !== 3) return null;
+
+    // 2. Descargar y cachear claves públicas de Google (TTL 1 hora)
+    $cacheFile = sys_get_temp_dir() . '/google_jwks.json';
+    $jwks = null;
+    if (is_file($cacheFile) && time() - filemtime($cacheFile) < 3600) {
+        $cached = @file_get_contents($cacheFile);
+        if ($cached) $jwks = json_decode($cached, true);
+    }
+    if (!$jwks) {
+        $raw = @file_get_contents('https://www.googleapis.com/oauth2/v3/certs');
+        if (!$raw) return null;
+        $jwks = json_decode($raw, true);
+        if (!$jwks) return null;
+        @file_put_contents($cacheFile, $raw);
+    }
+
+    // 3. Decodificar con firebase/php-jwt usando JWKS
+    try {
+        $keys = \Firebase\JWT\JWK::parseKeySet($jwks);
+        $decoded = (array) JWT::decode($idToken, $keys);
+    } catch (Throwable $e) {
+        return null;
+    }
+
+    // 4. Comprobar issuer + audience + exp
+    $iss = $decoded['iss'] ?? '';
+    if (!in_array($iss, ['accounts.google.com', 'https://accounts.google.com'], true)) {
+        return null;
+    }
+    $aud = $decoded['aud'] ?? '';
+    if (!in_array($aud, GOOGLE_ALLOWED_CLIENT_IDS, true)) {
+        return null;
+    }
+    // exp lo valida ya JWT::decode internamente.
+
+    return $decoded;
+}
+
 // Devuelve el id de la categoría sistema "Ahorro" (user_id NULL). Si no
 // existe la crea, así el front no necesita preocuparse.
 function savingsCategoryId(PDO $conn): int {
@@ -297,11 +349,12 @@ function requireAuth(PDO $conn): callable {
 $app->get('/', function (Request $request, Response $response) {
     return jsonResponse($response, [
         'success' => true,
-        'name'    => 'Finanzas API · Gestión de gastos personales',
-        'version' => '1.1.0',
+        'name'    => 'ChillPocket API · Gestión de gastos personales',
+        'version' => '1.2.0',
         'endpoints' => [
             'POST /auth/register             {name,email,password,currency?}',
             'POST /auth/login                {email,password}',
+            'POST /auth/google               {id_token}  (Google OAuth, devuelve nuestro JWT)',
             'GET  /me',
             'PUT  /me                        {name?,currency?,timezone?,theme?,avatar_url?}',
             'PUT  /me/password               {current_password,new_password}',
@@ -393,6 +446,91 @@ $app->post('/auth/register', function (Request $request, Response $response) use
         if ($conn->inTransaction()) $conn->rollBack();
         return jsonResponse($response, ['error'=>true,'message'=>'No se pudo crear: '.$e->getMessage()], 500);
     }
+});
+
+// =====================================================
+// LOGIN CON GOOGLE
+// =====================================================
+// Recibe un id_token de Google, lo verifica contra las claves públicas
+// y crea o reutiliza el usuario por email. Devuelve nuestro propio JWT.
+$app->post('/auth/google', function (Request $request, Response $response) use ($conn) {
+    $data = $request->getParsedBody() ?? [];
+    $idToken = isset($data['id_token']) ? (string)$data['id_token'] : '';
+    if ($idToken === '') {
+        return jsonResponse($response, ['error'=>true,'message'=>'Falta id_token'], 400);
+    }
+
+    $payload = verifyGoogleIdToken($idToken);
+    if (!$payload) {
+        return jsonResponse($response, ['error'=>true,'message'=>'Token de Google inválido'], 401);
+    }
+    $email = trim((string)($payload['email'] ?? ''));
+    $sub   = trim((string)($payload['sub']   ?? ''));
+    if ($email === '' || $sub === '') {
+        return jsonResponse($response, ['error'=>true,'message'=>'Token sin email/sub'], 401);
+    }
+    if (!empty($payload['email_verified']) && $payload['email_verified'] !== true && $payload['email_verified'] !== 'true') {
+        // Algunos tokens entregan el flag como bool, otros como string. Aceptamos ambos.
+    }
+
+    $name = trim((string)($payload['name'] ?? '')) ?: explode('@', $email)[0];
+    $picture = isset($payload['picture']) ? (string)$payload['picture'] : null;
+
+    try {
+        $conn->beginTransaction();
+
+        // 1) ¿Existe usuario con ese google_sub?
+        $stmt = $conn->prepare("SELECT id FROM users WHERE google_sub = :s LIMIT 1");
+        $stmt->execute([':s'=>$sub]);
+        $userId = $stmt->fetchColumn();
+
+        // 2) Si no, busca por email para enlazar cuenta existente.
+        if (!$userId) {
+            $stmt = $conn->prepare("SELECT id FROM users WHERE email = :e LIMIT 1");
+            $stmt->execute([':e'=>$email]);
+            $userId = $stmt->fetchColumn();
+            if ($userId) {
+                // Enlazamos el google_sub a la cuenta ya existente
+                $upd = $conn->prepare("UPDATE users SET google_sub = :s WHERE id = :id");
+                $upd->execute([':s'=>$sub, ':id'=>$userId]);
+            }
+        }
+
+        // 3) Si tampoco, creamos un usuario nuevo. Password aleatoria no usable
+        //    (el usuario entrará siempre por Google; si después quiere usar
+        //    contraseña, puede hacerlo desde "Cambiar contraseña" → email reset).
+        if (!$userId) {
+            $randomPwd = bin2hex(random_bytes(32));
+            $hash = password_hash($randomPwd, PASSWORD_DEFAULT);
+            $ins = $conn->prepare("
+                INSERT INTO users (name, email, password_hash, currency, timezone, avatar_url, google_sub)
+                VALUES (:n, :e, :h, 'EUR', 'Europe/Madrid', :a, :s)
+            ");
+            $ins->execute([
+                ':n'=>$name, ':e'=>$email, ':h'=>$hash, ':a'=>$picture, ':s'=>$sub,
+            ]);
+            $userId = (int)$conn->lastInsertId();
+        }
+
+        $conn->commit();
+    } catch (Throwable $e) {
+        if ($conn->inTransaction()) $conn->rollBack();
+        return jsonResponse($response, ['error'=>true,'message'=>'No se pudo iniciar sesión con Google'], 500);
+    }
+
+    $user = fetchUser($conn, (int)$userId);
+    if (!$user) {
+        return jsonResponse($response, ['error'=>true,'message'=>'Usuario no encontrado'], 500);
+    }
+
+    // Aprovechamos para regenerar transacciones recurrentes pendientes
+    try { expandRecurringTransactions($conn, (int)$user['id']); } catch (Throwable $e) {}
+
+    return jsonResponse($response, [
+        'success' => true,
+        'token'   => tokenForUser($user),
+        'user'    => $user,
+    ]);
 });
 
 $app->post('/auth/login', function (Request $request, Response $response) use ($conn) {
@@ -1350,6 +1488,19 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $prev->execute([':u'=>$uid, ':m'=>$month]);
         $prevRow = $prev->fetch(PDO::FETCH_ASSOC) ?: ['total_income'=>0,'total_expense'=>0];
 
+        // Aportado neto a metas de ahorro este mes (envelope):
+        // expense con goal_id = aportación, income con goal_id = retirada.
+        $sv = $conn->prepare("
+            SELECT
+                SUM(CASE WHEN type='expense' THEN amount ELSE -amount END) AS net_saved
+            FROM transactions
+            WHERE user_id = :u
+              AND goal_id IS NOT NULL
+              AND DATE_FORMAT(transaction_date, '%Y-%m') = :m
+        ");
+        $sv->execute([':u'=>$uid, ':m'=>$month]);
+        $savedThisMonth = (float)($sv->fetch(PDO::FETCH_ASSOC)['net_saved'] ?? 0);
+
         return jsonResponse($response, [
             'month_year'           => $month,
             'total_income'         => round($totalIncome, 2),
@@ -1368,6 +1519,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 'total_income'  => round((float)$prevRow['total_income'], 2),
                 'total_expense' => round((float)$prevRow['total_expense'], 2),
             ],
+            'saved_this_month'     => round($savedThisMonth, 2),
         ]);
     });
 
@@ -1535,6 +1687,17 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $prev->execute([':u'=>$uid, ':m'=>$month]);
         $prevRow = $prev->fetch(PDO::FETCH_ASSOC) ?: ['total_income'=>0,'total_expense'=>0];
 
+        $sv = $conn->prepare("
+            SELECT
+                SUM(CASE WHEN type='expense' THEN amount ELSE -amount END) AS net_saved
+            FROM transactions
+            WHERE user_id = :u
+              AND goal_id IS NOT NULL
+              AND DATE_FORMAT(transaction_date, '%Y-%m') = :m
+        ");
+        $sv->execute([':u'=>$uid, ':m'=>$month]);
+        $savedThisMonth = (float)($sv->fetch(PDO::FETCH_ASSOC)['net_saved'] ?? 0);
+
         $summary = [
             'month_year'           => $month,
             'total_income'         => round($totalIncome, 2),
@@ -1553,6 +1716,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 'total_income'  => round((float)$prevRow['total_income'], 2),
                 'total_expense' => round((float)$prevRow['total_expense'], 2),
             ],
+            'saved_this_month'     => round($savedThisMonth, 2),
         ];
 
         // ---- monthly ----
@@ -1649,7 +1813,8 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $pr = $st->fetch(PDO::FETCH_ASSOC) ?: ['avg_income'=>0,'avg_expense'=>0];
         $avgIncome  = (float)($pr['avg_income']  ?? 0);
         $avgExpense = (float)($pr['avg_expense'] ?? 0);
-        $monthlyNet = ($avgIncome + $rInc) - ($avgExpense + $rExp);
+        // Sin double-counting: los recurrentes ya están dentro de los avg.
+        $monthlyNet = $avgIncome - $avgExpense;
 
         $projection = [
             'avg_monthly_income'    => round($avgIncome, 2),
@@ -1726,7 +1891,11 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             if ($r['type'] === 'income') $rInc += $eq; else $rExp += $eq;
         }
 
-        $monthlyNet = ($avgIncome + $rInc) - ($avgExpense + $rExp);
+        // Importante: los gastos/ingresos recurrentes activos YA están
+        // materializados como transacciones (expandRecurringTransactions),
+        // por lo que ya pesan dentro de avgIncome/avgExpense. Sumarlos
+        // de nuevo aquí los contaría DOS veces.
+        $monthlyNet = $avgIncome - $avgExpense;
 
         return jsonResponse($response, [
             'avg_monthly_income'    => round($avgIncome, 2),
