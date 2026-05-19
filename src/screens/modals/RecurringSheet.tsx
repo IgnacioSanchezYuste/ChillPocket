@@ -10,6 +10,7 @@ import { useDataStore } from '../../store/useDataStore';
 import { useToast } from '../../components/Toast';
 import { recurringApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
+import { confirmDelete } from '../../utils/confirm';
 import { todayISO } from '../../utils/format';
 import { spacing } from '../../theme/spacing';
 import type { Recurring } from '../../api/types';
@@ -97,6 +98,11 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
 
   const onDelete = async () => {
     if (!editing) return;
+    const ok = await confirmDelete(
+      'gasto fijo',
+      `"${editing.name}" dejará de generar transacciones. Las ya creadas se mantienen.`
+    );
+    if (!ok) return;
     setSaving(true);
     try {
       await recurringApi.remove(editing.id);

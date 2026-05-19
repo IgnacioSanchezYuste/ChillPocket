@@ -11,6 +11,7 @@ import { Button } from '../../components/Button';
 import { BrandLogo } from '../../components/BrandLogo';
 import { useToast } from '../../components/Toast';
 import { apiError, API_URL } from '../../api/http';
+import { validateEmail, validatePassword } from '../../utils/validators';
 
 type Props = { onGoToRegister: () => void };
 
@@ -23,10 +24,10 @@ export const LoginScreen: React.FC<Props> = ({ onGoToRegister }) => {
   const [showPwd, setShowPwd] = useState(false);
 
   const onSubmit = async () => {
-    if (!email.trim() || !password) {
-      toast.error('Completa todos los campos');
-      return;
-    }
+    const emailErr = validateEmail(email);
+    if (emailErr) return toast.error(emailErr);
+    const pwdErr = validatePassword(password);
+    if (pwdErr) return toast.error(pwdErr);
     try {
       await login(email.trim(), password);
     } catch (e) {

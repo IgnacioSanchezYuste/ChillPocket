@@ -28,6 +28,19 @@ define('JWT_EXPIRATION', 7 * 24 * 3600);
 define('ALLOWED_METHODS', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
 define('ALLOWED_HEADERS', 'Authorization, Content-Type, Accept, Origin, X-Requested-With');
 
+// =====================================================
+// GOOGLE OAUTH
+// =====================================================
+// Lista de "audiences" válidos. El ID token de Google llevará uno de
+// estos en el claim `aud`. Hay que aceptar TODOS los client IDs que
+// uses (web, android, ios). Lo idóneo es pasarlos por variables de
+// entorno; aquí dejamos un fallback editable.
+define('GOOGLE_ALLOWED_CLIENT_IDS', array_filter([
+    getenv('GOOGLE_WEB_CLIENT_ID')     ?: 'PEGA_AQUI_EL_WEB_CLIENT_ID.apps.googleusercontent.com',
+    getenv('GOOGLE_ANDROID_CLIENT_ID') ?: null,
+    getenv('GOOGLE_IOS_CLIENT_ID')     ?: null,
+]));
+
 // ================= EARLY CORS (preflight short-circuit) =================
 // Si el navegador hace preflight OPTIONS lo respondemos antes de cargar
 // el router de Slim para evitar problemas con mod_security / proxys.

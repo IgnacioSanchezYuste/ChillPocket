@@ -15,6 +15,7 @@ import { TransactionRow } from '../../components/TransactionRow';
 import { FAB } from '../../components/FAB';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { BrandLogo } from '../../components/BrandLogo';
+import { SkeletonTransactionRow } from '../../components/Skeleton';
 import { TransactionSheet } from '../modals/TransactionSheet';
 import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
 import type { Transaction } from '../../api/types';
@@ -23,7 +24,17 @@ export const DashboardScreen: React.FC = () => {
   const { palette, mode } = useTheme();
   const navigation = useNavigation<any>();
   const { user } = useAuthStore();
-  const { summary, trends, transactions, refreshAll, fetchAnalytics, fetchTransactions } = useDataStore();
+  const {
+    summary,
+    trends,
+    transactions,
+    transactionsLoading,
+    transactionsLoadedAt,
+    refreshAll,
+    fetchAnalytics,
+    fetchTransactions,
+  } = useDataStore();
+  const showRecentSkeleton = transactionsLoading && transactionsLoadedAt === 0;
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
@@ -163,7 +174,13 @@ export const DashboardScreen: React.FC = () => {
             )}
           </View>
           <Card padding="xs" style={{ paddingVertical: 0, paddingHorizontal: 0 }}>
-            {recent.length === 0 ? (
+            {showRecentSkeleton ? (
+              <>
+                <SkeletonTransactionRow />
+                <SkeletonTransactionRow />
+                <SkeletonTransactionRow />
+              </>
+            ) : recent.length === 0 ? (
               <View style={{ padding: spacing.xl, alignItems: 'center' }}>
                 <Ionicons name="receipt-outline" size={28} color={palette.textMuted} />
                 <Text variant="body" tone="secondary" style={{ marginTop: spacing.sm }}>

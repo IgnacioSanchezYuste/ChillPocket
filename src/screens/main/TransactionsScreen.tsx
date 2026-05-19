@@ -15,6 +15,7 @@ import { CategoryChip } from '../../components/CategoryChip';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { EmptyState } from '../../components/EmptyState';
 import { FAB } from '../../components/FAB';
+import { SkeletonTransactionRow } from '../../components/Skeleton';
 import { TransactionSheet } from '../modals/TransactionSheet';
 import type { Transaction } from '../../api/types';
 
@@ -23,7 +24,15 @@ type Filter = 'all' | 'expense' | 'income';
 export const TransactionsScreen: React.FC = () => {
   const { palette } = useTheme();
   const { user } = useAuthStore();
-  const { transactions, categories, fetchTransactions, fetchCategories } = useDataStore();
+  const {
+    transactions,
+    transactionsLoading,
+    transactionsLoadedAt,
+    categories,
+    fetchTransactions,
+    fetchCategories,
+  } = useDataStore();
+  const isFirstLoad = transactionsLoading && transactionsLoadedAt === 0;
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState<number | null>(null);
@@ -102,16 +111,29 @@ export const TransactionsScreen: React.FC = () => {
         }
         
         ListEmptyComponent={
-          <EmptyState
-            icon="receipt-outline"
-            title="Sin transacciones"
-            description="Aún no hay movimientos que coincidan con estos filtros."
-            ctaLabel="Crear transacción"
-            onCta={() => {
-              setEditing(null);
-              setSheetOpen(true);
-            }}
-          />
+          isFirstLoad ? (
+            <View style={{ paddingHorizontal: spacing.lg, gap: spacing.sm }}>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <View
+                  key={i}
+                  style={[styles.card, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}
+                >
+                  <SkeletonTransactionRow />
+                </View>
+              ))}
+            </View>
+          ) : (
+            <EmptyState
+              icon="receipt-outline"
+              title="Sin transacciones"
+              description="Aún no hay movimientos que coincidan con estos filtros."
+              ctaLabel="Crear transacción"
+              onCta={() => {
+                setEditing(null);
+                setSheetOpen(true);
+              }}
+            />
+          )
         }
         renderItem={({ item }) => (
           <View style={{ paddingHorizontal: spacing.lg }}>

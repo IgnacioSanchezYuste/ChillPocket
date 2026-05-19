@@ -12,6 +12,7 @@ import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing, radius } from '../../theme/spacing';
 import { apiError } from '../../api/http';
+import { confirmDelete } from '../../utils/confirm';
 import { formatMoney } from '../../utils/format';
 import type { SavingsGoal } from '../../api/types';
 
@@ -118,6 +119,11 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
 
   const onDelete = async () => {
     if (!editing) return;
+    const ok = await confirmDelete(
+      'meta',
+      `Se eliminará "${editing.name}". Las transacciones ligadas se conservan pero perderán el enlace a la meta.`
+    );
+    if (!ok) return;
     setSaving(true);
     try {
       await goalsApi.remove(editing.id);

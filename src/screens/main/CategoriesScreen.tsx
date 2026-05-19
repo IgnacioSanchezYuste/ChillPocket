@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ScrollView, StyleSheet, Pressable, RefreshControl, Alert } from 'react-native';
+import { View, ScrollView, StyleSheet, Pressable, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useDataStore } from '../../store/useDataStore';
@@ -15,6 +15,7 @@ import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
 import { categoriesApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
+import { confirmDelete } from '../../utils/confirm';
 import { categoryDotPalette } from '../../theme/colors';
 import type { Category } from '../../api/types';
 
@@ -75,23 +76,16 @@ export const CategoriesScreen: React.FC = () => {
     }
   };
 
-  const onDelete = (c: Category) => {
-    Alert.alert('Eliminar categoría', `¿Eliminar "${c.name}"?`, [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Eliminar',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await categoriesApi.remove(c.id);
-            await fetchCategories(true);
-            toast.success('Eliminada');
-          } catch (e) {
-            toast.error(apiError(e));
-          }
-        },
-      },
-    ]);
+  const onDelete = async (c: Category) => {
+    const ok = await confirmDelete('categoría', `Se eliminará "${c.name}".`);
+    if (!ok) return;
+    try {
+      await categoriesApi.remove(c.id);
+      await fetchCategories(true);
+      toast.success('Eliminada');
+    } catch (e) {
+      toast.error(apiError(e));
+    }
   };
 
   const expenses = categories.filter((c) => c.type === 'expense');

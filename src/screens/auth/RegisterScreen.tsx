@@ -11,6 +11,7 @@ import { BrandLogo } from '../../components/BrandLogo';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
 import { apiError } from '../../api/http';
+import { validateEmail, validateName, validatePassword } from '../../utils/validators';
 
 type Props = { onGoToLogin: () => void };
 
@@ -24,10 +25,12 @@ export const RegisterScreen: React.FC<Props> = ({ onGoToLogin }) => {
   const [currency, setCurrency] = useState<'EUR' | 'USD' | 'GBP'>('EUR');
 
   const onSubmit = async () => {
-    if (!name.trim() || !email.trim() || password.length < 6) {
-      toast.error('Revisa los campos. Contraseña mínimo 6 caracteres.');
-      return;
-    }
+    const nameErr = validateName(name);
+    if (nameErr) return toast.error(nameErr);
+    const emailErr = validateEmail(email);
+    if (emailErr) return toast.error(emailErr);
+    const pwdErr = validatePassword(password);
+    if (pwdErr) return toast.error(pwdErr);
     try {
       await register({ name: name.trim(), email: email.trim(), password, currency });
     } catch (e) {

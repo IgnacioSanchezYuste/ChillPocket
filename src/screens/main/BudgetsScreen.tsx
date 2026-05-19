@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet, RefreshControl, Pressable, Alert } from 'react-native';
+import { View, ScrollView, StyleSheet, RefreshControl, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useDataStore } from '../../store/useDataStore';
@@ -19,6 +19,7 @@ import { CategoryChip } from '../../components/CategoryChip';
 import { useToast } from '../../components/Toast';
 import { budgetsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
+import { confirmDelete } from '../../utils/confirm';
 import { currentMonthYear, formatMoney, monthLabel } from '../../utils/format';
 import type { Budget, Category } from '../../api/types';
 
@@ -98,27 +99,19 @@ export const BudgetsScreen: React.FC = () => {
     }
   };
 
-  const onDelete = (b: Budget) => {
-    Alert.alert(
-      'Eliminar presupuesto',
-      `¿Eliminar el límite para ${b.category_name || 'sin categoría'}?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await budgetsApi.remove(b.id);
-              await fetchBudgets(activeMonth, true);
-              toast.success('Eliminado');
-            } catch (e) {
-              toast.error(apiError(e));
-            }
-          },
-        },
-      ]
+  const onDelete = async (b: Budget) => {
+    const ok = await confirmDelete(
+      'presupuesto',
+      `Se eliminará el límite para ${b.category_name || 'la categoría global'}.`
     );
+    if (!ok) return;
+    try {
+      await budgetsApi.remove(b.id);
+      await fetchBudgets(activeMonth, true);
+      toast.success('Eliminado');
+    } catch (e) {
+      toast.error(apiError(e));
+    }
   };
 
   const shiftMonth = (delta: number) => {

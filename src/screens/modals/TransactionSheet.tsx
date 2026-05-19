@@ -8,9 +8,11 @@ import { SegmentedControl } from '../../components/SegmentedControl';
 import { CategoryChip } from '../../components/CategoryChip';
 import { Text } from '../../components/Text';
 import { useDataStore } from '../../store/useDataStore';
+import { usePreferencesStore } from '../../store/usePreferencesStore';
 import { useToast } from '../../components/Toast';
 import { transactionsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
+import { confirmDelete } from '../../utils/confirm';
 import { todayISO } from '../../utils/format';
 import { spacing, radius } from '../../theme/spacing';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -26,6 +28,8 @@ type Props = {
 
 export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved }) => {
   const { categories, fetchCategories, refreshAll } = useDataStore();
+  const { lastCategoryId, lastPaymentMethod, setLastCategory, setLastPaymentMethod } =
+    usePreferencesStore();
   const toast = useToast();
   const { palette } = useTheme();
 
@@ -53,16 +57,26 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setNotes(editing.notes || '');
         setPaymentMethod(editing.payment_method ?? null);
       } else {
-        setType('expense');
+        // Nueva transacción: pre-rellenar con las últimas elecciones del usuario.
+        const initialType: 'expense' | 'income' = 'expense';
+        setType(initialType);
         setAmount('');
         setDescription('');
-        setCategoryId(null);
+        setCategoryId(lastCategoryId[initialType] ?? null);
         setDate(todayISO());
         setNotes('');
-        setPaymentMethod(null);
+        setPaymentMethod(lastPaymentMethod);
       }
     }
   }, [visible, editing]);
+
+  // Al cambiar el tipo (gasto/ingreso) en modo creación, intentar pre-seleccionar
+  // la última categoría usada para ese tipo. En edición se mantiene la actual.
+  useEffect(() => {
+    if (visible && !editing) {
+      setCategoryId(lastCategoryId[type] ?? null);
+    }
+  }, [type, visible, editing, lastCategoryId]);
 
   const filtered = useMemo(() => categories.filter((c) => c.type === type), [categories, type]);
   const generatedFromRecurring = !!editing?.recurring_id;
@@ -96,6 +110,9 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           payment_method: paymentMethod,
           notes: notes.trim() || null,
         });
+        // Persistir últimas elecciones (solo al crear, no al editar)
+        setLastCategory(type, categoryId);
+        if (type === 'expense') setLastPaymentMethod(paymentMethod);
         toast.success('Transacción creada');
       }
       await refreshAll(true);
@@ -110,6 +127,8 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
 
   const onDelete = async () => {
     if (!editing) return;
+    const ok = await confirmDelete('transacción', `"${editing.description}" se eliminará permanentemente.`);
+    if (!ok) return;
     setSaving(true);
     try {
       await transactionsApi.remove(editing.id);
