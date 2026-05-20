@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx expo-doctor *)",
+      "Bash(echo \"TSC EXIT: $?\")",
+      "Bash(cd \"c:\\\\Users\\\\nacho\\\\Documents\\\\DAM\\\\MiosProyectos\\\\ChillPocket\" && ls -a | grep -iE '\\\\.env' && echo \"=== content \\(keys only, values masked\\) ===\" && sed -E 's/=\\(.{12}\\).*/=\\\\1…\\(masked\\)/' .env 2>/dev/null)",
+      "Bash(grep -E '^\\\\.env$')"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\nacho\\Documents\\DAM\\MiosProyectos\\ChillPocket"
+    ]
+  }
+}

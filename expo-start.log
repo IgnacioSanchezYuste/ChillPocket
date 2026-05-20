@@ -1,0 +1,16 @@
+Starting project at C:\Users\nacho\Documents\DAM\MiosProyectos\ChillPocket
+Starting Metro Bundler
+Waiting on http://localhost:8081
+Logs for your project will appear below.
+Web .\index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web .\index.ts ▓▓▓▓▓▓▓▓▓▓░░░░░░ 64.8% (129/212)
+Web .\index.ts ▓▓▓▓▓▓▓▓▓▓▓░░░░░ 68.8% (684/841)
+Web .\index.ts ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 96.0% (1177/1201)
+Web Bundled 12044ms index.ts (1287 modules)
+ LOG  [web] Logs will appear in the browser console
+Web .\index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 104ms index.ts (1 module)
+ LOG  [web] Logs will appear in the browser console
+Web .\index.ts ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web Bundled 135ms index.ts (1 module)
+ LOG  [web] Logs will appear in the browser console
