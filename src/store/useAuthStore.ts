@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { authApi } from '../api/endpoints';
 import { TOKEN_KEY } from '../api/http';
+import { clearGoogleSession } from '../utils/googleSession';
+import { useOnboardingStore } from './useOnboardingStore';
 import type { User } from '../api/types';
 
 const USER_KEY = '@finanzas:user';
@@ -142,12 +144,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await AsyncStorage.setItem(TOKEN_KEY, res.token);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
       set({ token: res.token, user: res.user });
+      // Usuario recién creado vía Google → arrancar presentación/onboarding.
+      if (res.is_new) {
+        useOnboardingStore.getState().start({ name: res.user.name, currency: res.user.currency });
+      }
     } finally {
       set({ loading: false });
     }
   },
 
   logout: async () => {
+    await clearGoogleSession();
     await clearAuthStorage();
     set({ token: null, user: null });
   },

@@ -13,11 +13,17 @@ const STORAGE_KEY = '@finanzas:prefs';
 type Prefs = {
   lastCategoryId: Record<CategoryType, number | null>;
   lastPaymentMethod: PaymentMethod | null;
+  /** Objetivo principal elegido en el onboarding. */
+  goal: string | null;
+  /** Frecuencia de ingresos elegida en el onboarding. */
+  incomeFrequency: string | null;
 };
 
 const defaults: Prefs = {
   lastCategoryId: { expense: null, income: null },
   lastPaymentMethod: null,
+  goal: null,
+  incomeFrequency: null,
 };
 
 type State = Prefs & {
@@ -25,6 +31,7 @@ type State = Prefs & {
   hydrate: () => Promise<void>;
   setLastCategory: (type: CategoryType, id: number | null) => void;
   setLastPaymentMethod: (pm: PaymentMethod | null) => void;
+  setProfilePrefs: (p: { goal?: string | null; incomeFrequency?: string | null }) => void;
 };
 
 async function persist(snapshot: Prefs) {
@@ -48,6 +55,8 @@ export const usePreferencesStore = create<State>((set, get) => ({
           set({
             lastCategoryId: { ...defaults.lastCategoryId, ...(parsed.lastCategoryId || {}) },
             lastPaymentMethod: parsed.lastPaymentMethod ?? null,
+            goal: parsed.goal ?? null,
+            incomeFrequency: parsed.incomeFrequency ?? null,
           });
         }
       }
@@ -61,11 +70,29 @@ export const usePreferencesStore = create<State>((set, get) => ({
   setLastCategory: (type, id) => {
     const next = { ...get().lastCategoryId, [type]: id };
     set({ lastCategoryId: next });
-    persist({ lastCategoryId: next, lastPaymentMethod: get().lastPaymentMethod });
+    persist(snapshot(get(), { lastCategoryId: next }));
   },
 
   setLastPaymentMethod: (pm) => {
     set({ lastPaymentMethod: pm });
-    persist({ lastCategoryId: get().lastCategoryId, lastPaymentMethod: pm });
+    persist(snapshot(get(), { lastPaymentMethod: pm }));
+  },
+
+  setProfilePrefs: ({ goal, incomeFrequency }) => {
+    const patch: Partial<Prefs> = {};
+    if (goal !== undefined) patch.goal = goal;
+    if (incomeFrequency !== undefined) patch.incomeFrequency = incomeFrequency;
+    set(patch);
+    persist(snapshot(get(), patch));
   },
 }));
+
+function snapshot(s: Prefs, patch: Partial<Prefs>): Prefs {
+  return {
+    lastCategoryId: s.lastCategoryId,
+    lastPaymentMethod: s.lastPaymentMethod,
+    goal: s.goal,
+    incomeFrequency: s.incomeFrequency,
+    ...patch,
+  };
+}

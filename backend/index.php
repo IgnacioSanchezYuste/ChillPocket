@@ -36,8 +36,8 @@ define('ALLOWED_HEADERS', 'Authorization, Content-Type, Accept, Origin, X-Reques
 // uses (web, android, ios). Lo idóneo es pasarlos por variables de
 // entorno; aquí dejamos un fallback editable.
 define('GOOGLE_ALLOWED_CLIENT_IDS', array_filter([
-    getenv('GOOGLE_WEB_CLIENT_ID')     ?: 'PEGA_AQUI_EL_WEB_CLIENT_ID.apps.googleusercontent.com',
-    getenv('GOOGLE_ANDROID_CLIENT_ID') ?: null,
+    getenv('GOOGLE_WEB_CLIENT_ID')     ?: '1034342077931-haog5h9b2rmricio9bvr0lt3phpvgba7.apps.googleusercontent.com',
+    getenv('GOOGLE_ANDROID_CLIENT_ID') ?: '1034342077931-3auesgkpepgh13316hclrdkgbs0hubsg.apps.googleusercontent.com',
     getenv('GOOGLE_IOS_CLIENT_ID')     ?: null,
 ]));
 
@@ -171,53 +171,59 @@ function availableBalance(PDO $conn, int $userId): float {
 // =====================================================
 // GOOGLE OAUTH · verificación de ID token
 // =====================================================
-// Verifica un ID token de Google contra las claves públicas (JWKS).
-// No depende de google/apiclient: usamos firebase/php-jwt (ya instalada
-// vía composer para nuestro propio JWT) y nos descargamos las claves
-// públicas con cache simple.
+// Verificamos el ID token llamando al endpoint oficial de Google
+// (tokeninfo): Google comprueba la firma por nosotros, así que esto
+// NO depende de la versión de firebase/php-jwt ni de claves locales.
+// Luego validamos issuer + audience + expiración.
 //
-// Devuelve el payload decodificado (array con sub, email, name, ...)
-// o null si la verificación falla por cualquier motivo.
-function verifyGoogleIdToken(string $idToken): ?array {
-    // 1. Comprobar formato básico antes de hablar con Google
+// Devuelve ['ok'=>bool, 'reason'=>string, 'payload'=>array|null].
+
+function httpGetRaw(string $url): ?string {
+    // cURL preferido; fallback a file_get_contents si no hay cURL.
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        $res = curl_exec($ch);
+        curl_close($ch);
+        return $res === false ? null : $res;
+    }
+    $res = @file_get_contents($url);
+    return $res === false ? null : $res;
+}
+
+function verifyGoogleIdToken(string $idToken): array {
     $parts = explode('.', $idToken);
-    if (count($parts) !== 3) return null;
-
-    // 2. Descargar y cachear claves públicas de Google (TTL 1 hora)
-    $cacheFile = sys_get_temp_dir() . '/google_jwks.json';
-    $jwks = null;
-    if (is_file($cacheFile) && time() - filemtime($cacheFile) < 3600) {
-        $cached = @file_get_contents($cacheFile);
-        if ($cached) $jwks = json_decode($cached, true);
-    }
-    if (!$jwks) {
-        $raw = @file_get_contents('https://www.googleapis.com/oauth2/v3/certs');
-        if (!$raw) return null;
-        $jwks = json_decode($raw, true);
-        if (!$jwks) return null;
-        @file_put_contents($cacheFile, $raw);
+    if (count($parts) !== 3) {
+        return ['ok'=>false, 'reason'=>'formato_token_invalido', 'payload'=>null];
     }
 
-    // 3. Decodificar con firebase/php-jwt usando JWKS
-    try {
-        $keys = \Firebase\JWT\JWK::parseKeySet($jwks);
-        $decoded = (array) JWT::decode($idToken, $keys);
-    } catch (Throwable $e) {
-        return null;
+    $raw = httpGetRaw('https://oauth2.googleapis.com/tokeninfo?id_token=' . urlencode($idToken));
+    if ($raw === null) {
+        return ['ok'=>false, 'reason'=>'sin_conexion_con_google', 'payload'=>null];
+    }
+    $payload = json_decode($raw, true);
+    if (!is_array($payload) || isset($payload['error']) || isset($payload['error_description'])) {
+        return ['ok'=>false, 'reason'=>'token_rechazado_por_google', 'payload'=>null];
     }
 
-    // 4. Comprobar issuer + audience + exp
-    $iss = $decoded['iss'] ?? '';
+    $iss = $payload['iss'] ?? '';
     if (!in_array($iss, ['accounts.google.com', 'https://accounts.google.com'], true)) {
-        return null;
+        return ['ok'=>false, 'reason'=>'issuer_invalido', 'payload'=>null];
     }
-    $aud = $decoded['aud'] ?? '';
+    $aud = (string)($payload['aud'] ?? '');
     if (!in_array($aud, GOOGLE_ALLOWED_CLIENT_IDS, true)) {
-        return null;
+        // Pista clarísima de qué Client ID llega vs cuáles aceptamos.
+        return ['ok'=>false, 'reason'=>'client_id_no_coincide (token aud='.$aud.')', 'payload'=>null];
     }
-    // exp lo valida ya JWT::decode internamente.
+    if (isset($payload['exp']) && (int)$payload['exp'] < time()) {
+        return ['ok'=>false, 'reason'=>'token_expirado', 'payload'=>null];
+    }
 
-    return $decoded;
+    return ['ok'=>true, 'reason'=>'ok', 'payload'=>$payload];
 }
 
 // Devuelve el id de la categoría sistema "Ahorro" (user_id NULL). Si no
@@ -460,10 +466,11 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
         return jsonResponse($response, ['error'=>true,'message'=>'Falta id_token'], 400);
     }
 
-    $payload = verifyGoogleIdToken($idToken);
-    if (!$payload) {
-        return jsonResponse($response, ['error'=>true,'message'=>'Token de Google inválido'], 401);
+    $check = verifyGoogleIdToken($idToken);
+    if (!$check['ok']) {
+        return jsonResponse($response, ['error'=>true,'message'=>'Google: '.$check['reason']], 401);
     }
+    $payload = $check['payload'];
     $email = trim((string)($payload['email'] ?? ''));
     $sub   = trim((string)($payload['sub']   ?? ''));
     if ($email === '' || $sub === '') {
@@ -476,6 +483,7 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
     $name = trim((string)($payload['name'] ?? '')) ?: explode('@', $email)[0];
     $picture = isset($payload['picture']) ? (string)$payload['picture'] : null;
 
+    $isNew = false;
     try {
         $conn->beginTransaction();
 
@@ -510,6 +518,7 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
                 ':n'=>$name, ':e'=>$email, ':h'=>$hash, ':a'=>$picture, ':s'=>$sub,
             ]);
             $userId = (int)$conn->lastInsertId();
+            $isNew = true; // usuario recién creado vía Google → activar onboarding
         }
 
         $conn->commit();
@@ -530,6 +539,7 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
         'success' => true,
         'token'   => tokenForUser($user),
         'user'    => $user,
+        'is_new'  => $isNew,
     ]);
 });
 
@@ -1796,6 +1806,21 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $st->execute();
         $trends = $st->fetchAll(PDO::FETCH_ASSOC);
 
+        // ---- daily (gasto/ingreso por día del mes seleccionado) ----
+        // Sirve para el calendario heatmap y el desglose semanal del cliente.
+        $st = $conn->prepare("
+            SELECT t.transaction_date,
+                   DAY(t.transaction_date) AS day,
+                   SUM(CASE WHEN t.type='expense' THEN t.amount ELSE 0 END) AS expense,
+                   SUM(CASE WHEN t.type='income'  THEN t.amount ELSE 0 END) AS income
+            FROM transactions t
+            WHERE t.user_id = :u AND DATE_FORMAT(t.transaction_date, '%Y-%m') = :m
+            GROUP BY t.transaction_date
+            ORDER BY t.transaction_date ASC
+        ");
+        $st->execute([':u'=>$uid, ':m'=>$month]);
+        $daily = $st->fetchAll(PDO::FETCH_ASSOC);
+
         // ---- projection ----
         $st = $conn->prepare("
             SELECT AVG(monthly_income) AS avg_income, AVG(monthly_expense) AS avg_expense
@@ -1834,6 +1859,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             'payment_methods'     => $paymentMethods,
             'trends'              => $trends,
             'projection'          => $projection,
+            'daily'               => $daily,
         ]);
     });
 

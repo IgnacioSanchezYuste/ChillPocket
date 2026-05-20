@@ -5,6 +5,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { ToastProvider } from './src/components/Toast';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { usePreferencesStore } from './src/store/usePreferencesStore';
 
@@ -28,7 +29,9 @@ export default function App() {
       <SafeAreaProvider>
         <ThemeProvider>
           <ToastProvider>
-            <Inner />
+            <ErrorBoundary label="root">
+              <Inner />
+            </ErrorBoundary>
           </ToastProvider>
         </ThemeProvider>
       </SafeAreaProvider>

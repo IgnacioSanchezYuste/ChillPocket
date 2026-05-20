@@ -6,13 +6,28 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://ignaciosanchezyuste.es/API_Finanzas",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "1034342077931-haog5h9b2rmricio9bvr0lt3phpvgba7.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "1034342077931-3auesgkpepgh13316hclrdkgbs0hubsg.apps.googleusercontent.com"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://ignaciosanchezyuste.es/API_Finanzas",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "1034342077931-haog5h9b2rmricio9bvr0lt3phpvgba7.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "1034342077931-3auesgkpepgh13316hclrdkgbs0hubsg.apps.googleusercontent.com"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://ignaciosanchezyuste.es/API_Finanzas",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "1034342077931-haog5h9b2rmricio9bvr0lt3phpvgba7.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "1034342077931-3auesgkpepgh13316hclrdkgbs0hubsg.apps.googleusercontent.com"
+      }
     }
   },
   "submit": {

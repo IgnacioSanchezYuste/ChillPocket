@@ -25,16 +25,28 @@ type State =
 export function useGoogleAuth() {
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
 
+  // Este hook se usa SOLO en web (en Android/iOS se usa el SDK nativo en
+  // GoogleButton.native.tsx). En web forzamos el flujo implícito id_token,
+  // que es el que el cliente Web de Google soporta y nos da el id_token
+  // directamente en `params.id_token`. (En nativo este responseType daba
+  // "invalid_request", pero aquí ya no afecta porque nativo no usa este hook.)
   const [request, response, promptAsync] = Google.useAuthRequest({
     webClientId: GOOGLE_CLIENT_IDS.web || undefined,
-    androidClientId: GOOGLE_CLIENT_IDS.android || undefined,
-    iosClientId: GOOGLE_CLIENT_IDS.ios || undefined,
-    // Forzamos id_token en la respuesta (lo que validamos en backend).
     responseType: 'id_token' as any,
     scopes: ['openid', 'profile', 'email'],
   });
 
   const [state, setState] = useState<State>({ status: 'idle' });
+
+  // DEV helper: imprime el redirect URI exacto que genera la app. Cópialo y
+  // pégalo en Google Cloud → Credenciales → tu Client ID → URIs de redireccionamiento.
+  // Puedes borrar este efecto cuando ya lo tengas configurado.
+  useEffect(() => {
+    if (__DEV__ && request?.redirectUri) {
+      // eslint-disable-next-line no-console
+      console.log('🔑 [Google OAuth] Redirect URI a registrar en Google Cloud:', request.redirectUri);
+    }
+  }, [request?.redirectUri]);
 
   useEffect(() => {
     if (!response) return;

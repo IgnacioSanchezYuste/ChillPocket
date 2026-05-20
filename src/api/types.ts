@@ -104,6 +104,12 @@ export type AnalyticsSummary = {
 
 export type MonthlyPoint = { month_year: string; income: number; expense: number };
 export type TrendPoint = { transaction_date: string; income: number; expense: number };
+export type DailyPoint = {
+  transaction_date: string;
+  day: number;
+  income: number;
+  expense: number;
+};
 export type CategoryStat = {
   category_id: number | null;
   category_name: string;
@@ -146,4 +152,4 @@ export type User = {
   created_at: string;
 };
 
-export type AuthResponse = { success: true; token: string; user: User };
+export type AuthResponse = { success: true; token: string; user: User; is_new?: boolean };

@@ -6,6 +6,7 @@ import type {
   CategoryStat,
   CategoryComparisonRow,
   AnalyticsSummary,
+  DailyPoint,
   MonthlyPoint,
   PaymentMethod,
   PaymentMethodStat,
@@ -145,6 +146,7 @@ export type AnalyticsBundle = {
   payment_methods: PaymentMethodStat[];
   trends: TrendPoint[];
   projection: Projection;
+  daily: DailyPoint[];
 };
 
 export const analyticsApi = {

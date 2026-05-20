@@ -13,6 +13,7 @@ import type {
   Category,
   CategoryComparisonRow,
   CategoryStat,
+  DailyPoint,
   MonthlyPoint,
   PaymentMethodStat,
   Projection,
@@ -69,6 +70,7 @@ type DataState = {
   categoryComparison: CategoryComparisonRow[];
   paymentMethodStats: PaymentMethodStat[];
   trends: TrendPoint[];
+  daily: DailyPoint[];
   projection: Projection | null;
   analyticsLoading: boolean;
   analyticsMonth: string;
@@ -100,6 +102,7 @@ const empty = {
   categoryComparison: [],
   paymentMethodStats: [],
   trends: [],
+  daily: [],
   projection: null,
   analyticsMonth: currentMonthYear(),
   analyticsLoadedAt: 0,
@@ -187,6 +190,7 @@ export const useDataStore = create<DataState>((set, get) => ({
         categoryComparison: bundle.category_comparison,
         paymentMethodStats: bundle.payment_methods,
         trends: bundle.trends,
+        daily: bundle.daily ?? [],
         projection: bundle.projection,
         analyticsLoadedAt: Date.now(),
       });

@@ -19,14 +19,23 @@ import { useTheme } from '../../theme/ThemeProvider';
 import { PAYMENT_METHODS } from '../../utils/paymentMethods';
 import type { PaymentMethod, Transaction } from '../../api/types';
 
+export type TransactionPrefill = {
+  amount?: string;
+  description?: string;
+  type?: 'expense' | 'income';
+  paymentMethod?: PaymentMethod | null;
+  categoryName?: string;
+};
+
 type Props = {
   visible: boolean;
   onClose: () => void;
   editing?: Transaction | null;
   onSaved?: () => void;
+  prefill?: TransactionPrefill | null;
 };
 
-export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved }) => {
+export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved, prefill }) => {
   const { categories, fetchCategories, refreshAll } = useDataStore();
   const { lastCategoryId, lastPaymentMethod, setLastCategory, setLastPaymentMethod } =
     usePreferencesStore();
@@ -56,6 +65,16 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setDate(editing.transaction_date);
         setNotes(editing.notes || '');
         setPaymentMethod(editing.payment_method ?? null);
+      } else if (prefill) {
+        // Onboarding: formulario precargado con un ejemplo.
+        const t = prefill.type ?? 'expense';
+        setType(t);
+        setAmount(prefill.amount ?? '');
+        setDescription(prefill.description ?? '');
+        setCategoryId(null); // se resuelve por nombre en el efecto de categorías
+        setDate(todayISO());
+        setNotes('');
+        setPaymentMethod(prefill.paymentMethod ?? null);
       } else {
         // Nueva transacción: pre-rellenar con las últimas elecciones del usuario.
         const initialType: 'expense' | 'income' = 'expense';
@@ -73,10 +92,21 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
   // Al cambiar el tipo (gasto/ingreso) en modo creación, intentar pre-seleccionar
   // la última categoría usada para ese tipo. En edición se mantiene la actual.
   useEffect(() => {
-    if (visible && !editing) {
+    if (visible && !editing && !prefill) {
       setCategoryId(lastCategoryId[type] ?? null);
     }
   }, [type, visible, editing, lastCategoryId]);
+
+  // Onboarding: resolver la categoría del ejemplo por su nombre cuando carguen.
+  useEffect(() => {
+    if (visible && !editing && prefill?.categoryName && categories.length > 0) {
+      const wanted = prefill.categoryName.toLowerCase();
+      const match = categories.find(
+        (c) => c.type === (prefill.type ?? 'expense') && c.name.toLowerCase() === wanted
+      );
+      if (match) setCategoryId(match.id);
+    }
+  }, [categories, visible, editing]);
 
   const filtered = useMemo(() => categories.filter((c) => c.type === type), [categories, type]);
   const generatedFromRecurring = !!editing?.recurring_id;

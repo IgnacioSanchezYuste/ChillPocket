@@ -6,6 +6,8 @@ import { useAuthStore } from '../store/useAuthStore';
 import { setUnauthorizedHandler } from '../api/http';
 import { AuthNavigator } from './AuthNavigator';
 import { AppNavigator } from './AppNavigator';
+import { navigationRef } from './navigationRef';
+import { OnboardingHost } from '../onboarding/OnboardingHost';
 
 export const RootNavigator: React.FC = () => {
   const { mode, palette } = useTheme();
@@ -52,8 +54,9 @@ export const RootNavigator: React.FC = () => {
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer theme={navTheme} ref={navigationRef}>
       {token ? <AppNavigator /> : <AuthNavigator />}
+      {token && <OnboardingHost />}
     </NavigationContainer>
   );
 };

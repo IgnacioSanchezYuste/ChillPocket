@@ -60,8 +60,7 @@ const ToastView: React.FC<{ toast: Toast | null; opacity: Animated.Value }> = ({
     toast.kind === 'success' ? palette.success : toast.kind === 'error' ? palette.danger : palette.textPrimary;
   return (
     <Animated.View
-      style={[styles.wrap, { opacity, top: insets.top + spacing.sm }]}
-      pointerEvents="none"
+      style={[styles.wrap, { opacity, top: insets.top + spacing.sm, pointerEvents: 'none' }]}
     >
       <View style={[styles.toast, { backgroundColor: bg }]}>
         <Text variant="label" weight="semibold" tone="inverted" numberOfLines={3}>

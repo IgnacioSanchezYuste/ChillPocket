@@ -15,14 +15,23 @@ import { todayISO } from '../../utils/format';
 import { spacing } from '../../theme/spacing';
 import type { Recurring } from '../../api/types';
 
+export type RecurringPrefill = {
+  name?: string;
+  amount?: string;
+  type?: 'expense' | 'income';
+  frequency?: 'weekly' | 'monthly' | 'yearly';
+  categoryName?: string;
+};
+
 type Props = {
   visible: boolean;
   onClose: () => void;
   editing?: Recurring | null;
   onSaved?: () => void;
+  prefill?: RecurringPrefill | null;
 };
 
-export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved }) => {
+export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved, prefill }) => {
   const { categories, fetchCategories, fetchRecurring } = useDataStore();
   const toast = useToast();
   const [type, setType] = useState<'expense' | 'income'>('expense');
@@ -46,6 +55,13 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
         setFrequency(editing.frequency);
         setStartDate(editing.start_date);
         setCategoryId(editing.category_id);
+      } else if (prefill) {
+        setType(prefill.type ?? 'expense');
+        setName(prefill.name ?? '');
+        setAmount(prefill.amount ?? '');
+        setFrequency(prefill.frequency ?? 'monthly');
+        setStartDate(todayISO());
+        setCategoryId(null);
       } else {
         setType('expense');
         setName('');
@@ -56,6 +72,16 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
       }
     }
   }, [visible, editing]);
+
+  useEffect(() => {
+    if (visible && !editing && prefill?.categoryName && categories.length > 0) {
+      const wanted = prefill.categoryName.toLowerCase();
+      const match = categories.find(
+        (c) => c.type === (prefill.type ?? 'expense') && c.name.toLowerCase() === wanted
+      );
+      if (match) setCategoryId(match.id);
+    }
+  }, [categories, visible, editing]);
 
   const filtered = useMemo(() => categories.filter((c) => c.type === type), [categories, type]);
 

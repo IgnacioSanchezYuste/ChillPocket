@@ -1,73 +1,41 @@
 import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useTheme } from '../theme/ThemeProvider';
-import { radius, spacing } from '../theme/spacing';
-import { Text } from './Text';
+import { ErrorBoundary } from './ErrorBoundary';
+import { GoogleButtonView } from './GoogleButtonView';
 import { useToast } from './Toast';
+import { googleAuthAvailable } from '../api/googleConfig';
 import { useGoogleAuth } from '../hooks/useGoogleAuth';
 
 type Props = {
   label?: string;
-  /**
-   * Cuando no hay Client ID configurado el botón se oculta. En desarrollo
-   * puede ser útil mostrarlo igual para depurar; pasa `hideIfUnavailable={false}`.
-   */
   hideIfUnavailable?: boolean;
 };
 
-export const GoogleButton: React.FC<Props> = ({
-  label = 'Continuar con Google',
-  hideIfUnavailable = true,
-}) => {
-  const { palette, mode } = useTheme();
+// Implementación WEB (y fallback de tipos para TS). En Android/iOS Metro
+// usa GoogleButton.native.tsx en su lugar.
+export const GoogleButton: React.FC<Props> = (props) => {
+  const available = googleAuthAvailable();
+  if (props.hideIfUnavailable !== false && !available) return null;
+  return (
+    <ErrorBoundary label="GoogleButton" fallback={null}>
+      <GoogleButtonWebInner {...props} />
+    </ErrorBoundary>
+  );
+};
+
+const GoogleButtonWebInner: React.FC<Props> = ({ label = 'Continuar con Google' }) => {
   const toast = useToast();
-  const { available, request, signIn, state } = useGoogleAuth();
+  const { request, signIn, state } = useGoogleAuth();
 
   React.useEffect(() => {
     if (state.status === 'error') toast.error(state.error);
   }, [state]);
 
-  if (!available && hideIfUnavailable) return null;
-
-  const disabled = !request || state.status === 'pending';
-  const loading = state.status === 'pending';
-
   return (
-    <Pressable
+    <GoogleButtonView
+      label={label}
+      loading={state.status === 'pending'}
+      disabled={!request || state.status === 'pending'}
       onPress={signIn}
-      disabled={disabled}
-      style={({ pressed }) => [
-        styles.btn,
-        {
-          backgroundColor: mode === 'dark' ? palette.bgSurface : '#FFFFFF',
-          borderColor: palette.borderSubtle,
-          opacity: disabled ? 0.6 : pressed ? 0.85 : 1,
-        },
-      ]}
-    >
-      <View style={styles.row}>
-        {loading ? (
-          <ActivityIndicator color={palette.textPrimary} />
-        ) : (
-          <>
-            <Ionicons name="logo-google" size={18} color={palette.textPrimary} />
-            <Text variant="body" weight="semibold">{label}</Text>
-          </>
-        )}
-      </View>
-    </Pressable>
+    />
   );
 };
-
-const styles = StyleSheet.create({
-  btn: {
-    height: 52,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    paddingHorizontal: spacing.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-});

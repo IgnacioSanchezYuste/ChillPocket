@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../store/useAuthStore';
+import { useOnboardingStore } from '../../store/useOnboardingStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing } from '../../theme/spacing';
 import { Text } from '../../components/Text';
@@ -9,7 +10,6 @@ import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
 import { BrandLogo } from '../../components/BrandLogo';
 import { GoogleButton } from '../../components/GoogleButton';
-import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
 import { apiError } from '../../api/http';
 import { validateEmail, validateName, validatePassword } from '../../utils/validators';
@@ -23,7 +23,6 @@ export const RegisterScreen: React.FC<Props> = ({ onGoToLogin }) => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [currency, setCurrency] = useState<'EUR' | 'USD' | 'GBP'>('EUR');
 
   const onSubmit = async () => {
     const nameErr = validateName(name);
@@ -33,7 +32,9 @@ export const RegisterScreen: React.FC<Props> = ({ onGoToLogin }) => {
     const pwdErr = validatePassword(password);
     if (pwdErr) return toast.error(pwdErr);
     try {
-      await register({ name: name.trim(), email: email.trim(), password, currency });
+      await register({ name: name.trim(), email: email.trim(), password });
+      // Nuevo registro → arranca el onboarding (la moneda se elige allí).
+      useOnboardingStore.getState().start({ name: name.trim() });
     } catch (e) {
       toast.error(apiError(e, 'No se pudo crear la cuenta'));
     }
@@ -68,18 +69,6 @@ export const RegisterScreen: React.FC<Props> = ({ onGoToLogin }) => {
               value={password}
               onChangeText={setPassword}
             />
-            <View style={{ gap: 6 }}>
-              <Text variant="label" tone="secondary">Moneda</Text>
-              <SegmentedControl
-                options={[
-                  { value: 'EUR', label: '€ EUR' },
-                  { value: 'USD', label: '$ USD' },
-                  { value: 'GBP', label: '£ GBP' },
-                ]}
-                value={currency}
-                onChange={setCurrency}
-              />
-            </View>
 
             <Button title="Crear cuenta" loading={loading} onPress={onSubmit} size="lg" />
 

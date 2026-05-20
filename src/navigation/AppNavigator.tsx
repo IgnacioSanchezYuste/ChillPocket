@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,7 @@ import { spacing } from '../theme/spacing';
 import { Text } from '../components/Text';
 import { Card } from '../components/Card';
 import { ScreenHeader } from '../components/ScreenHeader';
+import { FloatingTabBar } from '../components/FloatingTabBar';
 import { DashboardScreen } from '../screens/main/DashboardScreen';
 import { TransactionsScreen } from '../screens/main/TransactionsScreen';
 import { AnalyticsScreen } from '../screens/main/AnalyticsScreen';
@@ -71,27 +72,14 @@ const MoreScreen: React.FC<any> = ({ navigation }) => {
 
 const Tabs: React.FC = () => {
   const { palette } = useTheme();
-  const insets = useSafeAreaInsets();
-  // En Android edge-to-edge y iOS con home indicator, sumamos el inset bottom
-  // para que los iconos no queden ocultos bajo la barra de navegación gestual.
-  const bottomInset = insets.bottom;
-  const baseHeight = 64;
 
   return (
     <Tab.Navigator
+      tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarActiveTintColor: palette.accent,
         tabBarInactiveTintColor: palette.textMuted,
-        tabBarStyle: {
-          backgroundColor: palette.bgSurface,
-          borderTopColor: palette.borderSubtle,
-          borderTopWidth: 1,
-          height: baseHeight + bottomInset,
-          paddingBottom: 8 + bottomInset,
-          paddingTop: 6,
-        },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
         tabBarIcon: ({ color, focused }) => {
           const map: Record<string, keyof typeof Ionicons.glyphMap> = {
             Home: focused ? 'home' : 'home-outline',

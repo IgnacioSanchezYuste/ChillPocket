@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($files = Get-ChildItem -LiteralPath \"c:\\\\Users\\\\Ignacio\\\\Desktop\\\\poyect\\\\Finanzas\\\\backend\"; foreach\\($f in $files\\){ Write-Output \\([string]::Join\\(\"|\", @\\($f.Name, $f.FullName\\)\\)\\) })",
+      "PowerShell($files = Get-ChildItem -LiteralPath \"c:\\\\Users\\\\Ignacio\\\\Desktop\\\\poyect\\\\Finanzas\\\\backend\"; foreach\\($f in $files\\){ Write-Output \\($f.Name -as [string]\\); foreach\\($c in $f.Name.ToCharArray\\(\\)\\){ Write-Output \\('{0:D5}' -f [int]$c\\) } })",
+      "Bash(npx tsc *)",
+      "PowerShell(npx --no-install tsc --noEmit 2>&1)",
+      "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 80 } else { Write-Output \"OK\" })",
+      "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 60 } else { Write-Output \"OK\" })",
+      "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 40 } else { Write-Output \"OK\" })",
+      "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 30 } else { Write-Output \"OK\" })",
+      "Bash(php -l backend/index.php)"
+    ]
+  }
+}

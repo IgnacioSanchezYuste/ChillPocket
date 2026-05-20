@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useDataStore } from '../../store/useDataStore';
+import { useOnboardingStore } from '../../store/useOnboardingStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing } from '../../theme/spacing';
 import { Text } from '../../components/Text';
@@ -186,6 +187,9 @@ export const SettingsScreen: React.FC = () => {
                 label="Exportar mis datos"
                 value={exporting ? 'Generando…' : 'JSON'}
               />
+            </Pressable>
+            <Pressable onPress={() => { navigation.navigate('Tabs'); useOnboardingStore.getState().restart(); }}>
+              <RowAction icon="sparkles-outline" label="Ver tutorial de nuevo" />
             </Pressable>
           </Section>
 

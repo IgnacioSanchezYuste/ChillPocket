@@ -1,24 +1,35 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollView, View, StyleSheet, RefreshControl, Dimensions } from 'react-native';
+import {
+  ScrollView,
+  View,
+  StyleSheet,
+  RefreshControl,
+  Pressable,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-chart-kit';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
-import { spacing } from '../../theme/spacing';
+import { spacing, radius } from '../../theme/spacing';
+import { useContentWidth } from '../../theme/layout';
 import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { KPICard } from '../../components/KPICard';
+import { BalanceHero } from '../../components/BalanceHero';
+import { BrandLogo } from '../../components/BrandLogo';
 import { TransactionRow } from '../../components/TransactionRow';
 import { FAB } from '../../components/FAB';
-import { ScreenHeader } from '../../components/ScreenHeader';
-import { BrandLogo } from '../../components/BrandLogo';
 import { SkeletonTransactionRow } from '../../components/Skeleton';
+import { MonthPickerModal } from '../../components/MonthPickerModal';
 import { TransactionSheet } from '../modals/TransactionSheet';
-import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
+import { monthLabel, currentMonthYear } from '../../utils/format';
 import type { Transaction } from '../../api/types';
+
+type ChartMode = 'both' | 'income' | 'expense';
 
 export const DashboardScreen: React.FC = () => {
   const { palette, mode } = useTheme();
@@ -30,6 +41,7 @@ export const DashboardScreen: React.FC = () => {
     transactions,
     transactionsLoading,
     transactionsLoadedAt,
+    analyticsMonth,
     refreshAll,
     fetchAnalytics,
     fetchTransactions,
@@ -38,8 +50,9 @@ export const DashboardScreen: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [chartMode, setChartMode] = useState<ChartMode>('both');
 
-  // Refrescar tanto en montaje como cada vez que la pantalla recibe foco
   useFocusEffect(useCallback(() => { refreshAll(); }, []));
 
   useEffect(() => {
@@ -58,8 +71,14 @@ export const DashboardScreen: React.FC = () => {
 
   const currency = user?.currency || 'EUR';
   const recent = transactions.slice(0, 5);
+  const selectedMonth = summary?.month_year || analyticsMonth || currentMonthYear();
 
-  const screenW = Dimensions.get('window').width;
+  const selectMonth = (m: string) => {
+    setMonthPickerOpen(false);
+    fetchAnalytics(m, true);
+  };
+
+  const { width: contentW, columnStyle } = useContentWidth();
   const chartData = useMemo(() => {
     const last = trends.slice(-7);
     const labels = last.map((p) => p.transaction_date.slice(5));
@@ -68,158 +87,219 @@ export const DashboardScreen: React.FC = () => {
     return { labels, expenses, incomes };
   }, [trends]);
 
+  // Sparklines decorativas para las KPI.
+  const sparks = useMemo(() => {
+    const last = trends.slice(-14);
+    let acc = 0;
+    const balance = last.map((p) => (acc += Number(p.income || 0) - Number(p.expense || 0)));
+    const expense = last.map((p) => Number(p.expense || 0));
+    return { balance, expense };
+  }, [trends]);
+
+  const datasets = useMemo(() => {
+    const ds: { data: number[]; color: () => string; strokeWidth: number }[] = [];
+    if (chartMode !== 'expense')
+      ds.push({ data: chartData.incomes, color: () => palette.success, strokeWidth: 2.5 });
+    if (chartMode !== 'income')
+      ds.push({ data: chartData.expenses, color: () => palette.danger, strokeWidth: 2.5 });
+    return ds;
+  }, [chartMode, chartData, palette]);
+
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.accent} />}
-      >
-        <ScreenHeader
-          title={`Hola, ${user?.name?.split(' ')[0] || ''}`}
-          subtitle={monthLabel(summary?.month_year || currentMonthYear())}
-          right={<BrandLogo size={44} />}
-        />
-
-        <View style={{ paddingHorizontal: spacing.lg }}>
-          <Card>
-            <Text variant="label" tone="secondary">Saldo del mes</Text>
-            <Text variant="display" tabular tone={(summary?.balance ?? 0) >= 0 ? 'success' : 'danger'}>
-              {formatMoney(summary?.balance ?? 0, currency)}
-            </Text>
-            <View style={styles.balanceRow}>
-              <View style={styles.balanceCol}>
-                <Text variant="caption" tone="muted">Ingresos</Text>
-                <Text variant="body" weight="semibold" tabular tone="success">
-                  {formatMoney(summary?.total_income ?? 0, currency)}
+    <View style={{ flex: 1, backgroundColor: palette.bgBase }}>
+      <LinearGradient colors={palette.gradientApp as any} style={StyleSheet.absoluteFill} />
+      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.accent} />
+          }
+        >
+         <View style={[columnStyle, { gap: spacing.md }]}>
+          {/* Header */}
+          <View style={styles.header}>
+            <View style={{ flex: 1 }}>
+              <Text variant="h1" style={{ fontSize: 26 }}>
+                Hola, {user?.name?.split(' ')[0] || ''} 👋
+              </Text>
+              <Pressable
+                onPress={() => setMonthPickerOpen(true)}
+                hitSlop={8}
+                style={[styles.monthPill, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}
+              >
+                <Text variant="label" tone="secondary" weight="medium" style={{ textTransform: 'capitalize' }}>
+                  {monthLabel(selectedMonth)}
                 </Text>
-              </View>
-              <View style={[styles.divider, { backgroundColor: palette.borderSubtle }]} />
-              <View style={styles.balanceCol}>
-                <Text variant="caption" tone="muted">Gastos</Text>
-                <Text variant="body" weight="semibold" tabular tone="danger">
-                  {formatMoney(summary?.total_expense ?? 0, currency)}
-                </Text>
-              </View>
-              <View style={[styles.divider, { backgroundColor: palette.borderSubtle }]} />
-              <View style={styles.balanceCol}>
-                <Text variant="caption" tone="muted">Libre</Text>
-                <Text variant="body" weight="semibold" tabular>
-                  {summary?.savings_ratio ?? 0}%
-                </Text>
-              </View>
+                <Ionicons name="chevron-down" size={14} color={palette.textSecondary} />
+              </Pressable>
             </View>
-            {(summary?.saved_this_month ?? 0) !== 0 && (
-              <View style={[styles.savedRow, { borderTopColor: palette.borderSubtle }]}>
-                <Ionicons name="flag" size={14} color={palette.accent} />
-                <Text variant="caption" tone="secondary">Ahorrado este mes</Text>
-                <Text
-                  variant="caption"
-                  weight="semibold"
-                  tabular
-                  tone={(summary?.saved_this_month ?? 0) >= 0 ? 'accent' : 'danger'}
-                  style={{ marginLeft: 'auto' }}
-                >
-                  {formatMoney(summary?.saved_this_month ?? 0, currency)}
-                </Text>
-              </View>
-            )}
-          </Card>
-        </View>
+            <Pressable
+              onPress={() => navigation.navigate('Settings')}
+              style={[
+                styles.headerBtn,
+                { backgroundColor: palette.bgSurface, shadowColor: mode === 'dark' ? '#000' : '#1B1B2F' },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Ajustes"
+            >
+              <BrandLogo size={28} withBackground={false} />
+            </Pressable>
+          </View>
 
-        <View style={[styles.kpiRow]}>
-          <KPICard
-            label="Saldo total"
-            amount={summary?.net_total_historical ?? 0}
-            currency={currency}
-            tone={(summary?.net_total_historical ?? 0) >= 0 ? 'success' : 'danger'}
-            helper="Histórico"
-          />
-          <KPICard
-            label="Gastos fijos"
-            amount={summary?.recurring_monthly.expense ?? 0}
-            currency={currency}
-            tone="primary"
-            helper="al mes"
-          />
-        </View>
+          {/* Hero saldo */}
+          <View style={{ paddingHorizontal: spacing.lg }}>
+            <BalanceHero
+              balance={summary?.balance ?? 0}
+              income={summary?.total_income ?? 0}
+              expense={summary?.total_expense ?? 0}
+              savingsRatio={summary?.savings_ratio ?? 0}
+              savedThisMonth={summary?.saved_this_month ?? 0}
+              currency={currency}
+            />
+          </View>
 
-        {chartData.labels.length > 1 && (
-          <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.md }}>
-            <Card padding="md">
-              <View style={styles.chartHeader}>
-                <Text variant="h2">Últimos 7 días</Text>
-                <Text variant="caption" tone="muted">Ingresos vs Gastos</Text>
-              </View>
-              <LineChart
-                data={{
-                  labels: chartData.labels,
-                  datasets: [
-                    { data: chartData.incomes, color: () => palette.success, strokeWidth: 2 },
-                    { data: chartData.expenses, color: () => palette.danger, strokeWidth: 2 },
-                  ],
-                }}
-                width={screenW - spacing.lg * 2 - spacing.md * 2}
-                height={170}
-                withShadow={false}
-                withInnerLines={false}
-                withOuterLines={false}
-                withDots={false}
-                bezier
-                chartConfig={{
-                  backgroundGradientFrom: palette.bgSurface,
-                  backgroundGradientTo: palette.bgSurface,
-                  decimalPlaces: 0,
-                  color: () => palette.textMuted,
-                  labelColor: () => palette.textMuted,
-                  propsForBackgroundLines: { stroke: 'transparent' },
-                }}
-                style={{ borderRadius: 8, marginLeft: -8 }}
-              />
+          {/* KPIs */}
+          <View style={styles.kpiRow}>
+            <KPICard
+              label="Saldo total"
+              amount={summary?.net_total_historical ?? 0}
+              currency={currency}
+              tone={(summary?.net_total_historical ?? 0) >= 0 ? 'success' : 'danger'}
+              helper="Histórico total"
+              icon="wallet-outline"
+              accentColor={palette.success}
+              spark={sparks.balance}
+            />
+            <KPICard
+              label="Gastos fijos"
+              amount={summary?.recurring_monthly.expense ?? 0}
+              currency={currency}
+              tone="accent"
+              helper="al mes"
+              icon="repeat-outline"
+              accentColor={palette.accent}
+              spark={sparks.expense}
+            />
+          </View>
+
+          {/* Gráfica */}
+          {chartData.labels.length > 1 && (
+            <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.md }}>
+              <Card padding="md">
+                <View style={styles.chartHeader}>
+                  <View>
+                    <Text variant="h2">Últimos 7 días</Text>
+                    <Text variant="caption" tone="muted">Evolución diaria</Text>
+                  </View>
+                  <View style={[styles.segment, { backgroundColor: palette.bgElevated }]}>
+                    {(['both', 'income', 'expense'] as ChartMode[]).map((m) => {
+                      const active = chartMode === m;
+                      const labelTxt = m === 'both' ? 'Ambos' : m === 'income' ? 'Ingresos' : 'Gastos';
+                      return (
+                        <Pressable
+                          key={m}
+                          onPress={() => setChartMode(m)}
+                          style={[styles.segmentBtn, active && { backgroundColor: palette.bgSurface }]}
+                        >
+                          <Text
+                            variant="caption"
+                            weight={active ? 'semibold' : 'regular'}
+                            tone={active ? 'accent' : 'muted'}
+                          >
+                            {labelTxt}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <LineChart
+                  data={{ labels: chartData.labels, datasets }}
+                  width={contentW - spacing.lg * 2 - spacing.md * 2}
+                  height={170}
+                  withShadow={false}
+                  withInnerLines
+                  withOuterLines={false}
+                  withDots
+                  bezier
+                  segments={3}
+                  chartConfig={{
+                    backgroundGradientFrom: palette.bgSurface,
+                    backgroundGradientTo: palette.bgSurface,
+                    decimalPlaces: 0,
+                    color: () => palette.textMuted,
+                    labelColor: () => palette.textMuted,
+                    propsForBackgroundLines: { stroke: palette.borderSubtle, strokeDasharray: '4 6' },
+                    propsForDots: { r: '3.5', strokeWidth: '2', stroke: palette.bgSurface },
+                  }}
+                  style={{ borderRadius: 8, marginLeft: -8 }}
+                />
+
+                <View style={styles.legend}>
+                  {chartMode !== 'expense' && (
+                    <View style={styles.legendItem}>
+                      <View style={[styles.legendDot, { backgroundColor: palette.success }]} />
+                      <Text variant="caption" tone="secondary">Ingresos</Text>
+                    </View>
+                  )}
+                  {chartMode !== 'income' && (
+                    <View style={styles.legendItem}>
+                      <View style={[styles.legendDot, { backgroundColor: palette.danger }]} />
+                      <Text variant="caption" tone="secondary">Gastos</Text>
+                    </View>
+                  )}
+                </View>
+              </Card>
+            </View>
+          )}
+
+          {/* Recientes */}
+          <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.lg, gap: spacing.sm }}>
+            <View style={styles.sectionHeader}>
+              <Text variant="h2">Recientes</Text>
+              {recent.length > 0 && (
+                <Pressable onPress={() => navigation.navigate('Movimientos')} hitSlop={8} style={styles.seeAll}>
+                  <Text variant="label" tone="accent" weight="semibold">Ver todas</Text>
+                  <Ionicons name="chevron-forward" size={14} color={palette.accent} />
+                </Pressable>
+              )}
+            </View>
+            <Card padding="xs" style={{ paddingVertical: 0, paddingHorizontal: 0 }}>
+              {showRecentSkeleton ? (
+                <>
+                  <SkeletonTransactionRow />
+                  <SkeletonTransactionRow />
+                  <SkeletonTransactionRow />
+                </>
+              ) : recent.length === 0 ? (
+                <View style={{ padding: spacing.xl, alignItems: 'center' }}>
+                  <Ionicons name="receipt-outline" size={28} color={palette.textMuted} />
+                  <Text variant="body" tone="secondary" style={{ marginTop: spacing.sm }}>
+                    Aún no hay movimientos
+                  </Text>
+                </View>
+              ) : (
+                recent.map((t) => (
+                  <TransactionRow
+                    key={t.id}
+                    tx={t}
+                    currency={currency}
+                    onPress={() => {
+                      setEditing(t);
+                      setSheetOpen(true);
+                    }}
+                  />
+                ))
+              )}
             </Card>
           </View>
-        )}
 
-        <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.lg, gap: spacing.sm }}>
-          <View style={styles.sectionHeader}>
-            <Text variant="h2">Recientes</Text>
-            {recent.length > 0 && (
-              <Text variant="label" tone="accent" weight="semibold" onPress={() => navigation.navigate('Movimientos')}>
-                Ver todas
-              </Text>
-            )}
-          </View>
-          <Card padding="xs" style={{ paddingVertical: 0, paddingHorizontal: 0 }}>
-            {showRecentSkeleton ? (
-              <>
-                <SkeletonTransactionRow />
-                <SkeletonTransactionRow />
-                <SkeletonTransactionRow />
-              </>
-            ) : recent.length === 0 ? (
-              <View style={{ padding: spacing.xl, alignItems: 'center' }}>
-                <Ionicons name="receipt-outline" size={28} color={palette.textMuted} />
-                <Text variant="body" tone="secondary" style={{ marginTop: spacing.sm }}>
-                  Aún no hay movimientos
-                </Text>
-              </View>
-            ) : (
-              recent.map((t) => (
-                <TransactionRow
-                  key={t.id}
-                  tx={t}
-                  currency={currency}
-                  onPress={() => {
-                    setEditing(t);
-                    setSheetOpen(true);
-                  }}
-                />
-              ))
-            )}
-          </Card>
-        </View>
-
-        <View style={{ height: spacing.xxxl * 2 }} />
-      </ScrollView>
+          <View style={{ height: spacing.xxxl * 2 }} />
+         </View>
+        </ScrollView>
+      </SafeAreaView>
 
       <FAB
         onPress={() => {
@@ -228,26 +308,55 @@ export const DashboardScreen: React.FC = () => {
         }}
       />
 
+      <MonthPickerModal
+        visible={monthPickerOpen}
+        selected={selectedMonth}
+        onSelect={selectMonth}
+        onClose={() => setMonthPickerOpen(false)}
+      />
+
       <TransactionSheet
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         editing={editing}
         onSaved={refreshAll}
       />
-    </SafeAreaView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
   content: { paddingBottom: spacing.xl, gap: spacing.md },
-  balanceRow: {
-    marginTop: spacing.lg,
+  header: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
   },
-  balanceCol: { flex: 1, gap: 2 },
-  divider: { width: 1, height: 32 },
+  monthPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  headerBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
   kpiRow: {
     flexDirection: 'row',
     paddingHorizontal: spacing.lg,
@@ -255,17 +364,28 @@ const styles = StyleSheet.create({
   },
   chartHeader: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    paddingBottom: spacing.sm,
-  },
-  sectionHeader: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
-  savedRow: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginTop: spacing.md,
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
+    justifyContent: 'space-between',
+    paddingBottom: spacing.md,
   },
+  segment: {
+    flexDirection: 'row',
+    borderRadius: radius.pill,
+    padding: 3,
+  },
+  segmentBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+  },
+  legend: {
+    flexDirection: 'row',
+    gap: spacing.lg,
+    marginTop: spacing.sm,
+    paddingLeft: 4,
+  },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendDot: { width: 9, height: 9, borderRadius: 5 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  seeAll: { flexDirection: 'row', alignItems: 'center', gap: 2 },
 });
