@@ -12,6 +12,9 @@
   tomar de `useTheme().palette`. Respetar `spacing`/`radius`. Cuidar modo claro y oscuro.
 - Comentarios en español, concisos, explicando el "por qué" no el "qué". Igualar el estilo del código vecino.
 - Backend PHP: mantener el patrón Slim existente, consultas PDO **siempre parametrizadas**, filtrar por `user_id`.
+- **Secreto JWT**: `index.php` lo lee, en orden, de `getenv('JWT_SECRET')` → `Conexion::JWT_SECRET_CONFIG`
+  (constante de la clase `Conexion` en `backend/Conexion.php`, NO versionado) → constante global `JWT_SECRET_CONFIG`.
+  Si falta, el backend aborta (fail-closed). Nunca poner el secreto en el repo.
 
 ## Rendimiento / red (CRÍTICO)
 - Hostinger limita a **500 conexiones MySQL/hora**. Minimiza peticiones: usa `/analytics/all`, respeta el

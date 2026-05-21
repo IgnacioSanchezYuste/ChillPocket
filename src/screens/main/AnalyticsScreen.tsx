@@ -9,7 +9,7 @@ import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing, radius } from '../../theme/spacing';
-import { useContentWidth } from '../../theme/layout';
+import { useContentWidth, useBreakpoint } from '../../theme/layout';
 import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ProgressBar } from '../../components/ProgressBar';
@@ -85,7 +85,12 @@ export const AnalyticsScreen: React.FC = () => {
 
   const currency = user?.currency || 'EUR';
   const { width: screenW, columnStyle } = useContentWidth();
-  const chartW = screenW - spacing.lg * 2 - spacing.md * 2;
+  const { isLg } = useBreakpoint();
+  // En desktop, comparativa y línea van en 2 columnas → cada gráfica a media anchura.
+  const chartWFull = screenW - spacing.lg * 2 - spacing.md * 2;
+  const chartWHalf = Math.max(160, (screenW - spacing.lg * 2 - spacing.lg) / 2 - spacing.md * 2);
+  const chartW = isLg ? chartWHalf : chartWFull;
+  const pmBudgetsRow = isLg && paymentMethodStats.length > 0 && budgets.length > 0;
   const selectedMonth = summary?.month_year || analyticsMonth || currentMonthYear();
 
   const selectMonth = (m: string) => {
@@ -263,6 +268,7 @@ export const AnalyticsScreen: React.FC = () => {
                 </Text>
               ) : (
                 <>
+                  <View style={isLg ? { flexDirection: 'row', gap: spacing.xl, alignItems: 'center' } : undefined}>
                   <View style={styles.donutWrap}>
                     <DonutChart
                       segments={donutSegments}
@@ -277,7 +283,7 @@ export const AnalyticsScreen: React.FC = () => {
                     </DonutChart>
                   </View>
 
-                  <View style={{ gap: spacing.md, marginTop: spacing.lg }}>
+                  <View style={isLg ? { flex: 1, gap: spacing.md } : { gap: spacing.md, marginTop: spacing.lg }}>
                     {sortedCats.slice(0, 6).map((c) => {
                       const color = c.category_color || palette.accent;
                       const pct = totalExpenses > 0 ? (Number(c.total) / totalExpenses) * 100 : 0;
@@ -307,6 +313,7 @@ export const AnalyticsScreen: React.FC = () => {
                         </View>
                       );
                     })}
+                  </View>
                   </View>
 
                   <View style={[styles.footerLine, { borderTopColor: palette.borderSubtle }]}>
@@ -360,8 +367,10 @@ export const AnalyticsScreen: React.FC = () => {
               </LinearGradient>
             )}
 
-            {/* Comparativa mensual */}
+            {/* Comparativa mensual + Ingresos vs gastos (2 columnas en desktop) */}
             {monthlyData.labels.length > 1 && (
+            <View style={isLg ? { flexDirection: 'row', gap: spacing.lg, alignItems: 'flex-start' } : { gap: spacing.md }}>
+              <View style={isLg ? { flex: 1 } : undefined}>
               <Card padding="md">
                 <Text variant="h2">Comparativa mensual</Text>
                 <Text variant="caption" tone="muted">
@@ -389,10 +398,9 @@ export const AnalyticsScreen: React.FC = () => {
                   style={{ marginTop: spacing.sm, marginLeft: -8 }}
                 />
               </Card>
-            )}
+              </View>
 
-            {/* Ingresos vs gastos (tendencia) */}
-            {monthlyData.labels.length > 1 && (
+              <View style={isLg ? { flex: 1 } : undefined}>
               <Card padding="md">
                 <Text variant="h2">Ingresos vs Gastos</Text>
                 <Text variant="caption" tone="muted">Tendencia</Text>
@@ -423,6 +431,8 @@ export const AnalyticsScreen: React.FC = () => {
                   style={{ marginTop: spacing.sm, marginLeft: -8 }}
                 />
               </Card>
+              </View>
+            </View>
             )}
 
             {/* Hábitos de gasto */}
@@ -430,8 +440,10 @@ export const AnalyticsScreen: React.FC = () => {
               <SpendingHabits monthYear={summary?.month_year || currentMonthYear()} daily={daily} currency={currency} />
             )}
 
-            {/* Por tipo de pago */}
+            {/* Por tipo de pago + Presupuestos (2 columnas en desktop) */}
+            <View style={pmBudgetsRow ? { flexDirection: 'row', gap: spacing.lg, alignItems: 'flex-start' } : { gap: spacing.md }}>
             {paymentMethodStats.length > 0 && (
+              <View style={pmBudgetsRow ? { flex: 1 } : undefined}>
               <Card>
                 <Text variant="h2">Por tipo de pago</Text>
                 <Text variant="caption" tone="muted">{monthLabel(summary?.month_year || currentMonthYear())}</Text>
@@ -469,10 +481,12 @@ export const AnalyticsScreen: React.FC = () => {
                   })}
                 </View>
               </Card>
+              </View>
             )}
 
             {/* Presupuestos */}
             {budgets.length > 0 && (
+              <View style={pmBudgetsRow ? { flex: 1 } : undefined}>
               <Card>
                 <View style={styles.rowBetween}>
                   <Text variant="h2">Presupuestos</Text>
@@ -527,7 +541,9 @@ export const AnalyticsScreen: React.FC = () => {
                   })}
                 </View>
               </Card>
+              </View>
             )}
+            </View>
 
             {monthlyData.labels.length === 0 && sortedCats.length === 0 && (
               <EmptyState

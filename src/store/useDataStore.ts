@@ -210,5 +210,14 @@ export const useDataStore = create<DataState>((set, get) => ({
     ]);
   },
 
-  reset: () => set({ ...empty }),
+  reset: () =>
+    set({
+      ...empty,
+      categoriesLoading: false,
+      transactionsLoading: false,
+      recurringLoading: false,
+      goalsLoading: false,
+      budgetsLoading: false,
+      analyticsLoading: false,
+    }),
 }));

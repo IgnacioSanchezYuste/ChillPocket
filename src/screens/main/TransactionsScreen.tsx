@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet, RefreshControl, FlatList } from 'react-native';
+import { View, ScrollView, StyleSheet, RefreshControl, SectionList } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -11,6 +11,7 @@ import { Text } from '../../components/Text';
 import { Input } from '../../components/Input';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { TransactionRow } from '../../components/TransactionRow';
+import { monthLabel } from '../../utils/format';
 import { CategoryChip } from '../../components/CategoryChip';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { EmptyState } from '../../components/EmptyState';
@@ -60,6 +61,31 @@ export const TransactionsScreen: React.FC = () => {
     });
   }, [transactions, filter, categoryId, search]);
 
+  // Agrupa por fecha relativa: Hoy / Ayer / Esta semana / Este mes / <Mes año>.
+  const sections = useMemo(() => {
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const dayMs = 86400000;
+    const buckets = new Map<string, Transaction[]>();
+    const order: string[] = [];
+    const titleFor = (dateStr: string) => {
+      const d = new Date(dateStr);
+      const dOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const diff = Math.round((startToday - dOnly) / dayMs);
+      if (diff <= 0) return 'Hoy';
+      if (diff === 1) return 'Ayer';
+      if (diff < 7) return 'Esta semana';
+      if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return 'Este mes';
+      return monthLabel(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    };
+    for (const t of filtered) {
+      const title = titleFor(t.transaction_date);
+      if (!buckets.has(title)) { buckets.set(title, []); order.push(title); }
+      buckets.get(title)!.push(t);
+    }
+    return order.map((title) => ({ title, data: buckets.get(title)! }));
+  }, [filtered]);
+
   const onRefresh = async () => {
     setRefreshing(true);
     await fetchTransactions(undefined, true);
@@ -102,14 +128,21 @@ export const TransactionsScreen: React.FC = () => {
         </ScrollView>
       </View>
 
-      <FlatList
-        data={filtered}
+      <SectionList
+        sections={sections}
         keyExtractor={(t) => String(t.id)}
         contentContainerStyle={{ paddingTop: spacing.md, paddingBottom: 120 }}
+        stickySectionHeadersEnabled={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.accent} />
         }
-        
+        renderSectionHeader={({ section }) => (
+          <View style={{ paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.xs }}>
+            <Text variant="label" tone="muted" weight="semibold" style={{ textTransform: 'capitalize' }}>
+              {section.title}
+            </Text>
+          </View>
+        )}
         ListEmptyComponent={
           isFirstLoad ? (
             <View style={{ paddingHorizontal: spacing.lg, gap: spacing.sm }}>
@@ -136,7 +169,7 @@ export const TransactionsScreen: React.FC = () => {
           )
         }
         renderItem={({ item }) => (
-          <View style={{ paddingHorizontal: spacing.lg }}>
+          <View style={{ paddingHorizontal: spacing.lg, marginBottom: spacing.sm }}>
             <View style={[styles.card, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}>
               <TransactionRow
                 tx={item}

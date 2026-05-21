@@ -4,6 +4,7 @@ import { authApi } from '../api/endpoints';
 import { TOKEN_KEY } from '../api/http';
 import { clearGoogleSession } from '../utils/googleSession';
 import { useOnboardingStore } from './useOnboardingStore';
+import { useDataStore } from './useDataStore';
 import type { User } from '../api/types';
 
 const USER_KEY = '@finanzas:user';
@@ -156,6 +157,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     await clearGoogleSession();
     await clearAuthStorage();
+    // Limpia los datos financieros en memoria para que otro usuario que inicie
+    // sesión en el mismo dispositivo no vea nada del anterior.
+    try { useDataStore.getState().reset(); } catch { /* noop */ }
     set({ token: null, user: null });
   },
 

@@ -10,6 +10,7 @@ import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
+import { CategoryBadge } from '../../components/CategoryBadge';
 import { FAB } from '../../components/FAB';
 import { ProgressBar } from '../../components/ProgressBar';
 import { Sheet } from '../../components/Sheet';
@@ -183,7 +184,7 @@ export const BudgetsScreen: React.FC = () => {
                 <Pressable key={b.id} onPress={() => openEdit(b)} onLongPress={() => onDelete(b)}>
                   <Card>
                     <View style={styles.row}>
-                      <View style={[styles.dot, { backgroundColor: b.category_color || palette.textMuted }]} />
+                      <CategoryBadge color={b.category_color} icon={b.category_icon} type="expense" size={38} />
                       <View style={{ flex: 1, gap: 2 }}>
                         <Text variant="body" weight="semibold">
                           {b.category_name || 'Global (todas las categorías)'}

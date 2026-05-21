@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ScrollView,
   View,
@@ -15,11 +15,12 @@ import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing, radius } from '../../theme/spacing';
-import { useContentWidth } from '../../theme/layout';
+import { useContentWidth, useBreakpoint } from '../../theme/layout';
 import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { KPICard } from '../../components/KPICard';
 import { BalanceHero } from '../../components/BalanceHero';
+import { InsightBanner } from '../../components/InsightBanner';
 import { BrandLogo } from '../../components/BrandLogo';
 import { TransactionRow } from '../../components/TransactionRow';
 import { FAB } from '../../components/FAB';
@@ -38,13 +39,13 @@ export const DashboardScreen: React.FC = () => {
   const {
     summary,
     trends,
+    daily,
     transactions,
     transactionsLoading,
     transactionsLoadedAt,
     analyticsMonth,
     refreshAll,
     fetchAnalytics,
-    fetchTransactions,
   } = useDataStore();
   const showRecentSkeleton = transactionsLoading && transactionsLoadedAt === 0;
   const [refreshing, setRefreshing] = useState(false);
@@ -53,15 +54,9 @@ export const DashboardScreen: React.FC = () => {
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
   const [chartMode, setChartMode] = useState<ChartMode>('both');
 
+  // Refresca al recibir el foco (con throttle de 30s del store). Sin polling:
+  // un setInterval consumiría conexiones MySQL (cuota de Hostinger) sin valor real.
   useFocusEffect(useCallback(() => { refreshAll(); }, []));
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      fetchAnalytics();
-      fetchTransactions();
-    }, 60_000);
-    return () => clearInterval(id);
-  }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -79,6 +74,11 @@ export const DashboardScreen: React.FC = () => {
   };
 
   const { width: contentW, columnStyle } = useContentWidth();
+  const { isLg } = useBreakpoint();
+  const rowGap = spacing.lg;
+  const rowAvail = contentW - spacing.lg * 2;
+  const chartColW = isLg ? Math.floor((rowAvail - rowGap) * 0.56) : rowAvail;
+  const chartInner = Math.max(160, (isLg ? chartColW : rowAvail) - spacing.md * 2);
   const chartData = useMemo(() => {
     const last = trends.slice(-7);
     const labels = last.map((p) => p.transaction_date.slice(5));
@@ -159,6 +159,11 @@ export const DashboardScreen: React.FC = () => {
             />
           </View>
 
+          {/* Insight accionable */}
+          <View style={{ paddingHorizontal: spacing.lg }}>
+            <InsightBanner summary={summary} daily={daily} currency={currency} />
+          </View>
+
           {/* KPIs */}
           <View style={styles.kpiRow}>
             <KPICard
@@ -183,9 +188,16 @@ export const DashboardScreen: React.FC = () => {
             />
           </View>
 
-          {/* Gráfica */}
+          {/* Gráfica + Recientes (lado a lado en desktop) */}
+          <View
+            style={
+              isLg
+                ? { flexDirection: 'row', alignItems: 'flex-start', gap: rowGap, paddingHorizontal: spacing.lg, marginTop: spacing.md }
+                : undefined
+            }
+          >
           {chartData.labels.length > 1 && (
-            <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.md }}>
+            <View style={isLg ? { width: chartColW } : { paddingHorizontal: spacing.lg, marginTop: spacing.md }}>
               <Card padding="md">
                 <View style={styles.chartHeader}>
                   <View>
@@ -217,7 +229,7 @@ export const DashboardScreen: React.FC = () => {
 
                 <LineChart
                   data={{ labels: chartData.labels, datasets }}
-                  width={contentW - spacing.lg * 2 - spacing.md * 2}
+                  width={chartInner}
                   height={170}
                   withShadow={false}
                   withInnerLines
@@ -256,7 +268,7 @@ export const DashboardScreen: React.FC = () => {
           )}
 
           {/* Recientes */}
-          <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.lg, gap: spacing.sm }}>
+          <View style={isLg ? { flex: 1, gap: spacing.sm } : { paddingHorizontal: spacing.lg, marginTop: spacing.lg, gap: spacing.sm }}>
             <View style={styles.sectionHeader}>
               <Text variant="h2">Recientes</Text>
               {recent.length > 0 && (
@@ -294,6 +306,7 @@ export const DashboardScreen: React.FC = () => {
                 ))
               )}
             </Card>
+          </View>
           </View>
 
           <View style={{ height: spacing.xxxl * 2 }} />

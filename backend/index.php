@@ -21,7 +21,26 @@ require __DIR__ . "/vendor/autoload.php";
 require __DIR__ . "/Conexion.php";
 
 // ================= CONFIG =================
-define('JWT_SECRET', getenv('JWT_SECRET') ?: 'cambia_este_secreto_en_produccion');
+// El secreto JWT NUNCA va en el repo. Se busca, en este orden:
+//   1) variable de entorno JWT_SECRET
+//   2) constante de clase  Conexion::JWT_SECRET_CONFIG  (en Conexion.php, no versionado)
+//   3) constante global    JWT_SECRET_CONFIG
+// Si no está configurado, abortamos (fail-closed): jamás firmamos con un
+// secreto público/por defecto, porque permitiría forjar sesiones.
+$__jwtSecret = getenv('JWT_SECRET') ?: '';
+if ($__jwtSecret === '' && defined('Conexion::JWT_SECRET_CONFIG')) {
+    $__jwtSecret = (string) Conexion::JWT_SECRET_CONFIG;
+}
+if ($__jwtSecret === '' && defined('JWT_SECRET_CONFIG')) {
+    $__jwtSecret = (string) JWT_SECRET_CONFIG;
+}
+if ($__jwtSecret === '' || $__jwtSecret === 'cambia_este_secreto_en_produccion') {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => true, 'message' => 'Servidor mal configurado']);
+    exit;
+}
+define('JWT_SECRET', $__jwtSecret);
 // Antes 3600s (1h) - causaba cierre de sesión durante el uso normal.
 // 7 días es un compromiso razonable para una app personal en hosting propio.
 define('JWT_EXPIRATION', 7 * 24 * 3600);
@@ -450,7 +469,8 @@ $app->post('/auth/register', function (Request $request, Response $response) use
         ], 201);
     } catch (Throwable $e) {
         if ($conn->inTransaction()) $conn->rollBack();
-        return jsonResponse($response, ['error'=>true,'message'=>'No se pudo crear: '.$e->getMessage()], 500);
+        error_log('[auth/register] ' . $e->getMessage());
+        return jsonResponse($response, ['error'=>true,'message'=>'No se pudo crear la cuenta'], 500);
     }
 });
 
@@ -476,8 +496,12 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
     if ($email === '' || $sub === '') {
         return jsonResponse($response, ['error'=>true,'message'=>'Token sin email/sub'], 401);
     }
-    if (!empty($payload['email_verified']) && $payload['email_verified'] !== true && $payload['email_verified'] !== 'true') {
-        // Algunos tokens entregan el flag como bool, otros como string. Aceptamos ambos.
+    // Exigir email verificado ANTES de enlazar/crear cuenta por email. Sin esto,
+    // un id_token con un email no verificado podría enlazarse a una cuenta ajena
+    // (toma de cuentas). Google entrega el flag como bool o string.
+    $emailVerified = $payload['email_verified'] ?? false;
+    if ($emailVerified !== true && $emailVerified !== 'true') {
+        return jsonResponse($response, ['error'=>true,'message'=>'El email de Google no está verificado'], 401);
     }
 
     $name = trim((string)($payload['name'] ?? '')) ?: explode('@', $email)[0];
@@ -853,7 +877,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $paymentMethod = isset($data['payment_method']) && $data['payment_method'] !== '' ? (string)$data['payment_method'] : null;
 
         if ($description === '') return jsonResponse($response, ['error'=>true,'message'=>'Descripción obligatoria'], 400);
-        if ($amount < 0)          return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+        if (!is_finite($amount) || $amount <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
         if (!in_array($type, ['expense','income'], true)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Tipo inválido'], 400);
         }
@@ -911,7 +935,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
         if (array_key_exists('amount', $data)) {
             $a = (float)$data['amount'];
-            if ($a < 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+            if (!is_finite($a) || $a <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
             $fields[] = 'amount = :amount'; $params[':amount'] = $a;
         }
         if (array_key_exists('type', $data)) {
@@ -1010,7 +1034,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $notes     = isset($data['notes']) ? trim((string)$data['notes']) : null;
 
         if ($name === '')   return jsonResponse($response, ['error'=>true,'message'=>'Nombre obligatorio'], 400);
-        if ($amount < 0)    return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+        if (!is_finite($amount) || $amount <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
         if (!in_array($frequency, ['weekly','monthly','yearly'], true)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Frecuencia inválida'], 400);
         }
@@ -1058,7 +1082,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
         if (array_key_exists('amount', $data)) {
             $a = (float)$data['amount'];
-            if ($a < 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+            if (!is_finite($a) || $a <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
             $fields[] = 'amount = :amount'; $params[':amount'] = $a;
         }
         if (array_key_exists('type', $data)) {
@@ -1380,7 +1404,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $resetDay = isset($data['reset_day']) ? (int)$data['reset_day'] : 1;
         if ($resetDay < 1 || $resetDay > 28) $resetDay = 1;
 
-        if ($amount < 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+        if (!is_finite($amount) || $amount <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
         if (!validMonthYear($month)) return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido'], 400);
 
         if ($catId !== null) {
@@ -1412,7 +1436,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         if (array_key_exists('amount', $data)) {
             $a = (float)$data['amount'];
-            if ($a < 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+            if (!is_finite($a) || $a <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
             $fields[] = 'amount = :amount'; $params[':amount'] = $a;
         }
         if (array_key_exists('reset_day', $data)) {
@@ -1937,7 +1961,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 })->add(requireAuth($conn));
 
 // ================= ERRORS =================
-$errorMiddleware = $app->addErrorMiddleware(true, true, true);
+// displayErrorDetails=false en producción: no exponer stack/SQL al cliente.
+// (Los errores siguen registrándose en el log del servidor.)
+$errorMiddleware = $app->addErrorMiddleware(false, true, true);
 
 $errorMiddleware->setErrorHandler(\Slim\Exception\HttpNotFoundException::class,
     function (Request $request, Throwable $e, bool $d) use ($app) {

@@ -196,7 +196,7 @@ export const SettingsScreen: React.FC = () => {
           <View style={{ marginTop: spacing.xl }}>
             <Button title="Cerrar sesión" variant="secondary" onPress={onLogout} />
           </View>
-          <Text variant="caption" tone="muted" align="center">ChillPocket v1.1.0</Text>
+          <Text variant="caption" tone="muted" align="center">ChillPocket v1.4.0</Text>
         </View>
       </ScrollView>
 

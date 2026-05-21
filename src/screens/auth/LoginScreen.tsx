@@ -91,9 +91,11 @@ export const LoginScreen: React.FC<Props> = ({ onGoToRegister }) => {
               <Text variant="body" tone="accent" weight="semibold">Regístrate</Text>
             </Pressable>
           </View>
-          <Text variant="caption" tone="muted" align="center" style={{ marginTop: spacing.lg }}>
-            API · {API_URL}
-          </Text>
+          {__DEV__ && (
+            <Text variant="caption" tone="muted" align="center" style={{ marginTop: spacing.lg }}>
+              API · {API_URL}
+            </Text>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

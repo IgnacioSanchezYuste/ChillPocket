@@ -6,10 +6,12 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { spacing } from '../theme/spacing';
+import { useBreakpoint } from '../theme/layout';
 import { Text } from '../components/Text';
 import { Card } from '../components/Card';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { FloatingTabBar } from '../components/FloatingTabBar';
+import { AppSidebar } from '../components/AppSidebar';
 import { DashboardScreen } from '../screens/main/DashboardScreen';
 import { TransactionsScreen } from '../screens/main/TransactionsScreen';
 import { AnalyticsScreen } from '../screens/main/AnalyticsScreen';
@@ -72,10 +74,12 @@ const MoreScreen: React.FC<any> = ({ navigation }) => {
 
 const Tabs: React.FC = () => {
   const { palette } = useTheme();
+  const { isDesktop } = useBreakpoint();
 
   return (
     <Tab.Navigator
-      tabBar={(props) => <FloatingTabBar {...props} />}
+      // En desktop la navegación vive en el sidebar persistente → ocultamos la barra.
+      tabBar={isDesktop ? () => null : (props) => <FloatingTabBar {...props} />}
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarActiveTintColor: palette.accent,
@@ -99,7 +103,7 @@ const Tabs: React.FC = () => {
   );
 };
 
-export const AppNavigator: React.FC = () => (
+const AppStack: React.FC = () => (
   <Stack.Navigator screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
     <Stack.Screen name="Tabs" component={Tabs} />
     <Stack.Screen name="Recurring" component={RecurringScreen} />
@@ -110,6 +114,26 @@ export const AppNavigator: React.FC = () => (
     <Stack.Screen name="Investments" component={InvestmentsScreen} />
   </Stack.Navigator>
 );
+
+// En desktop, un sidebar persistente acompaña a TODO el stack (también las
+// pantallas secundarias). En móvil/tablet el stack va solo y la navegación
+// está en los bottom tabs.
+// La estructura del árbol es estable (siempre Row > [sidebar?] + Stack) para
+// que cruzar el breakpoint al redimensionar NO remonte el navigator ni resetee
+// la navegación; solo aparece/desaparece el sidebar.
+export const AppNavigator: React.FC = () => {
+  const { isDesktop } = useBreakpoint();
+  const { palette } = useTheme();
+
+  return (
+    <View style={{ flex: 1, flexDirection: 'row', backgroundColor: palette.bgBase }}>
+      {isDesktop && <AppSidebar />}
+      <View style={{ flex: 1 }}>
+        <AppStack />
+      </View>
+    </View>
+  );
+};
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },

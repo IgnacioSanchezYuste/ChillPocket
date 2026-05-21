@@ -9,7 +9,10 @@
       "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 60 } else { Write-Output \"OK\" })",
       "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 40 } else { Write-Output \"OK\" })",
       "PowerShell($out = npx --no-install tsc --noEmit 2>&1; if \\($LASTEXITCODE -ne 0\\) { Write-Output \\(\"EXIT=\"+$LASTEXITCODE\\); Write-Output \"OUT:\"; $out | Select-Object -First 30 } else { Write-Output \"OK\" })",
-      "Bash(php -l backend/index.php)"
+      "Bash(php -l backend/index.php)",
+      "Bash(Get-ChildItem \"c:\\\\Users\\\\Ignacio\\\\Desktop\\\\poyect\\\\Finanzas\\\\backend\\\\\" -Name)",
+      "Bash(node -e \"console.log\\(require\\('crypto'\\).randomBytes\\(48\\).toString\\('hex'\\)\\)\")",
+      "Bash(openssl rand *)"
     ]
   }
 }

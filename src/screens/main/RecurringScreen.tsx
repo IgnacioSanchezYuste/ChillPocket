@@ -10,6 +10,7 @@ import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
+import { CategoryBadge } from '../../components/CategoryBadge';
 import { FAB } from '../../components/FAB';
 import { RecurringSheet } from '../modals/RecurringSheet';
 import { formatMoney } from '../../utils/format';
@@ -122,8 +123,8 @@ export const RecurringScreen: React.FC = () => {
               >
                 <Card>
                   <View style={styles.rowTop}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flex: 1 }}>
-                      <View style={[styles.dot, { backgroundColor: r.category_color || palette.textMuted }]} />
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 }}>
+                      <CategoryBadge color={r.category_color} icon={r.category_icon} type={r.type} size={38} />
                       <View style={{ flex: 1 }}>
                         <Text variant="body" weight="semibold">{r.name}</Text>
                         <Text variant="caption" tone="muted">

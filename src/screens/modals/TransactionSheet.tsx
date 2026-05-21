@@ -113,7 +113,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
 
   const onSave = async () => {
     const amt = parseFloat(amount.replace(',', '.'));
-    if (!Number.isFinite(amt) || amt < 0) return toast.error('Importe inválido');
+    if (!Number.isFinite(amt) || amt <= 0) return toast.error('El importe debe ser mayor que 0');
     if (!description.trim()) return toast.error('Añade una descripción');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return toast.error('Fecha YYYY-MM-DD');
 

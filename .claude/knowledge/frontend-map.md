@@ -5,8 +5,12 @@
   Crea `NavigationContainer` con `navigationRef` (para navegar desde fuera de pantallas, p.ej. el onboarding).
 - `AppNavigator.tsx`: Stack nativo. Pantalla `Tabs` (bottom tabs: **Home, Movimientos, Analítica, Más**) +
   pantallas apiladas (Recurring, Goals, Categories, Settings, Budgets, Investments). La pestaña "Más" es un hub.
-- `FloatingTabBar.tsx`: barra inferior premium (esquinas redondeadas, sombra, indicador activo). Cada botón
-  registra un objetivo de spotlight (`tab-Home`, `tab-Movimientos`, ...) para el onboarding.
+- `FloatingTabBar.tsx`: barra inferior premium (móvil/tablet). Cada botón registra un objetivo de spotlight
+  (`tab-Home`, ...) para el onboarding. **En desktop (`isDesktop`) se oculta** (`tabBar={()=>null}`).
+- `AppSidebar.tsx`: barra lateral persistente en desktop (≥960px). Expone TODAS las secciones (tabs + rutas de
+  stack) y Ajustes; navega vía `navigationRef` (`navigateToTab`/`navigateToRoute`) y marca el item activo con
+  `useActiveRouteName()`. `AppNavigator` envuelve el stack en `Row > [AppSidebar?] + Stack` (estructura estable
+  para no remontar al redimensionar). `ResponsiveGrid` es un grid reutilizable que reorganiza Cards por breakpoint.
 - `navigationRef.ts`: `navigationRef` + `navigateToTab(name)`.
 
 ## Stores (zustand, `src/store/`)
@@ -50,8 +54,10 @@
 - `colors.ts`: `lightPalette` (pastel) y `darkPalette` (sobrio). Degradados: `gradientHero, gradientApp,
   gradientAccent, gradientBalance` (hero saldo vibrante), `gradientFab`.
 - `spacing.ts`: `spacing`, `radius`, `fontSize`, `fontWeight`.
-- `layout.ts`: `useContentWidth()` acota el contenido a **600px** centrados en web y reacciona al resize.
-  Úsalo para anchos de gráficas y como contenedor de columna.
+- `layout.ts`: sistema responsive. `useBreakpoint()` → `{ bp:'sm'|'md'|'lg', isLg, isDesktop, width }`
+  (sm <600, md 600–959, lg ≥960). `useContentWidth()` devuelve el ancho útil del contenido (en desktop =
+  ventana − `SIDEBAR_WIDTH`, acotado a `DESKTOP_CONTENT_MAX`) + `columnStyle` (columna centrada). Úsalo para
+  anchos de gráficas. La app **reorganiza** (no estira): en desktop hay sidebar + grids de 2 columnas.
 - `ThemeProvider`: `useTheme()` → `{ palette, mode, preference, setPreference }`.
 
 ## Onboarding (`src/onboarding/`)

@@ -88,7 +88,7 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
   const onSave = async () => {
     const amt = parseFloat(amount.replace(',', '.'));
     if (!name.trim()) return toast.error('Añade un nombre');
-    if (!Number.isFinite(amt) || amt < 0) return toast.error('Importe inválido');
+    if (!Number.isFinite(amt) || amt <= 0) return toast.error('El importe debe ser mayor que 0');
     setSaving(true);
     try {
       if (editing) {
