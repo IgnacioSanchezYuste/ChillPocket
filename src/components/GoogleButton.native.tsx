@@ -14,13 +14,14 @@ type Props = {
   hideIfUnavailable?: boolean;
 };
 
-// Configuración única del SDK nativo. webClientId se usa como "serverClientId":
-// hace que el idToken devuelto tenga como audience el Web Client ID, que es
-// justo el que valida nuestro backend.
+// Configuración única del SDK nativo.
+// En Android/iOS: usar androidClientId (la app tiene su propia credencial de Google)
+// El idToken se valida en backend contra el Web Client ID de Google Cloud.
 let configured = false;
 function ensureConfigured() {
   if (configured) return;
   GoogleSignin.configure({
+    androidClientId: GOOGLE_CLIENT_IDS.android || undefined,
     webClientId: GOOGLE_CLIENT_IDS.web || undefined,
     // offlineAccess: false → no necesitamos serverAuthCode, solo idToken.
     offlineAccess: false,

@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Política de Privacidad de ChillPocket">
+    <title>Política de Privacidad - ChillPocket</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1rem;
+            opacity: 0.9;
+        }
+
+        /* Content */
+        .content {
+            padding: 40px 30px;
+        }
+
+        .content section {
+            margin-bottom: 35px;
+        }
+
+        .content h2 {
+            color: #667eea;
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 10px;
+        }
+
+        .content h3 {
+            color: #555;
+            font-size: 1.1rem;
+            margin-top: 15px;
+            margin-bottom: 8px;
+        }
+
+        .content p {
+            margin-bottom: 12px;
+            text-align: justify;
+        }
+
+        .content ul, .content ol {
+            margin-left: 20px;
+            margin-bottom: 12px;
+        }
+
+        .content li {
+            margin-bottom: 8px;
+        }
+
+        .content strong {
+            color: #667eea;
+        }
+
+        .info-box {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        /* Form Section */
+        .form-section {
+            background: #f9f9f9;
+            padding: 30px;
+            border-radius: 8px;
+            margin-top: 40px;
+        }
+
+        .form-section h2 {
+            color: #764ba2;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 5px rgba(102, 126, 234, 0.3);
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        .form-group.checkbox {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .form-group.checkbox input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .form-group.checkbox label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: normal;
+        }
+
+        .submit-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 14px 30px;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .submit-btn:active {
+            transform: translateY(0);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Success/Error Messages */
+        .message {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+
+        /* Footer */
+        .footer {
+            background: #f5f7fa;
+            padding: 30px;
+            text-align: center;
+            color: #666;
+            font-size: 0.9rem;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .header h1 {
+                font-size: 1.8rem;
+            }
+
+            .content {
+                padding: 20px;
+            }
+
+            .form-section {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🔒 Política de Privacidad</h1>
+            <p>ChillPocket - Tu dinero, bajo control</p>
+        </div>
+
+        <!-- Main Content -->
+        <div class="content">
+            <!-- Intro -->
+            <div class="info-box">
+                <strong>Fecha de entrada en vigor:</strong> 2026-05-21<br>
+                <strong>Responsable:</strong> Ignacio Sánchez Yuste<br>
+                <strong>Contacto:</strong> Ignaciosanchezyuste@gmail.com<br>
+                <strong>Jurisdicción:</strong> España
+            </div>
+
+            <p>
+                Esta Política de Privacidad describe cómo se recopilan, usan y protegen los datos personales en la app 
+                <strong>ChillPocket</strong> (móvil y web). Si no estás de acuerdo, no uses el servicio.
+            </p>
+
+            <!-- Sección 1 -->
+            <section>
+                <h2>1. Datos que recopilamos</h2>
+                <p>Recopilamos solo la información necesaria para prestar el servicio:</p>
+
+                <h3>📧 Datos de cuenta</h3>
+                <ul>
+                    <li>Nombre, email y credenciales (hash de contraseña, no la contraseña en texto).</li>
+                    <li>Preferencias: moneda, zona horaria, tema.</li>
+                    <li>Avatar (si lo proporcionas).</li>
+                    <li>Identificador de Google (<code>google_sub</code>) si eliges inicio de sesión con Google.</li>
+                </ul>
+
+                <h3>💰 Datos financieros y de uso de la app</h3>
+                <ul>
+                    <li>Categorías, transacciones, recurrentes, presupuestos y metas.</li>
+                    <li>Notas y métodos de pago asociados a movimientos.</li>
+                    <li>Fechas y descripciones de movimientos.</li>
+                </ul>
+
+                <h3>🔧 Datos técnicos básicos</h3>
+                <ul>
+                    <li>IP, navegador/sistema, y registros técnicos mínimos necesarios para seguridad, diagnóstico y operación.</li>
+                </ul>
+
+                <h3>💬 Datos de soporte</h3>
+                <ul>
+                    <li>Mensajes que nos envías y su contenido.</li>
+                </ul>
+            </section>
+
+            <!-- Sección 2 -->
+            <section>
+                <h2>2. Datos que NO recopilamos</h2>
+                <ul>
+                    <li>❌ No usamos publicidad personalizada.</li>
+                    <li>❌ No usamos analítica de terceros.</li>
+                    <li>❌ No vendemos datos personales.</li>
+                </ul>
+            </section>
+
+            <!-- Sección 3 -->
+            <section>
+                <h2>3. Fuentes de datos</h2>
+                <ul>
+                    <li><strong>Directamente del usuario</strong> (registro, configuración, movimientos).</li>
+                    <li><strong>Generados por el uso</strong> (presupuestos, historiales y cálculos).</li>
+                    <li><strong>Proveedores de identidad</strong> (Google, solo si eliges esa opción).</li>
+                </ul>
+            </section>
+
+            <!-- Sección 4 -->
+            <section>
+                <h2>4. Finalidades y base legal</h2>
+                <p>Tratamos tus datos para:</p>
+                <ol>
+                    <li><strong>Prestar el servicio</strong> (ejecución del contrato): crear cuenta, guardar movimientos, mostrar analítica.</li>
+                    <li><strong>Seguridad y prevención de abuso</strong> (interés legítimo): proteger cuentas y evitar fraude.</li>
+                    <li><strong>Soporte</strong> (interés legítimo o consentimiento): responder consultas.</li>
+                    <li><strong>Cumplimiento legal</strong> (obligación legal): responder a requerimientos legales.</li>
+                </ol>
+            </section>
+
+            <!-- Sección 5 -->
+            <section>
+                <h2>5. Compartición de datos</h2>
+                <p>Solo compartimos datos cuando es imprescindible:</p>
+                <ul>
+                    <li><strong>Alojamiento e infraestructura</strong>: proveedores de hosting para operar la app y la base de datos.</li>
+                    <li><strong>Google</strong>: si usas inicio de sesión con Google, Google procesa tu información según su política.</li>
+                </ul>
+                <p>No compartimos datos con terceros para fines publicitarios ni los vendemos.</p>
+            </section>
+
+            <!-- Sección 6 -->
+            <section>
+                <h2>6. Transferencias internacionales</h2>
+                <p>
+                    Si algún proveedor procesa datos fuera del EEE, aplicaremos garantías adecuadas (por ejemplo,
+                    Cláusulas Contractuales Tipo) para proteger tu información conforme al RGPD.
+                </p>
+            </section>
+
+            <!-- Sección 7 -->
+            <section>
+                <h2>7. Conservación de datos</h2>
+                <ul>
+                    <li><strong>Cuenta activa</strong>: conservamos los datos mientras tu cuenta exista.</li>
+                    <li><strong>Borrado de cuenta</strong>: eliminamos o anonimizamos datos en un plazo razonable tras tu solicitud.</li>
+                    <li><strong>Backups</strong>: pueden mantenerse por ciclos limitados antes de su purga automática.</li>
+                    <li><strong>Logs técnicos</strong>: se retienen el tiempo necesario para seguridad y diagnóstico.</li>
+                </ul>
+            </section>
+
+            <!-- Sección 8 -->
+            <section>
+                <h2>8. Derechos del usuario (RGPD)</h2>
+                <p>Puedes ejercer los siguientes derechos:</p>
+                <ul>
+                    <li>✅ Acceso, rectificación y supresión.</li>
+                    <li>✅ Oposición y limitación del tratamiento.</li>
+                    <li>✅ Portabilidad de los datos.</li>
+                    <li>✅ Retirar consentimiento cuando aplique.</li>
+                </ul>
+                <p>
+                    Para ejercerlos, escribe a <strong>Ignaciosanchezyuste@gmail.com</strong>.
+                </p>
+                <p>
+                    Si consideras que tus derechos no han sido atendidos, puedes reclamar ante la <strong>AEPD</strong> 
+                    (Agencia Española de Protección de Datos).
+                </p>
+            </section>
+
+            <!-- Sección 9 -->
+            <section>
+                <h2>9. Menores</h2>
+                <p>
+                    La app está destinada a personas de <strong>13 años o más</strong>. No recopilamos intencionadamente datos de menores
+                    de esa edad. Si eres padre/madre o tutor y detectas un uso indebido, contacta con nosotros.
+                </p>
+            </section>
+
+            <!-- Sección 10 -->
+            <section>
+                <h2>10. Seguridad</h2>
+                <p>Aplicamos medidas técnicas y organizativas razonables para proteger la información, incluyendo:</p>
+                <ul>
+                    <li>🔐 Hash de contraseñas.</li>
+                    <li>🔒 Acceso restringido a la base de datos.</li>
+                    <li>🛡️ Controles básicos de seguridad en servidor.</li>
+                </ul>
+                <p>
+                    Ningún sistema es 100% seguro; si detectas una incidencia, contactanos de inmediato.
+                </p>
+            </section>
+
+            <!-- Sección 11 -->
+            <section>
+                <h2>11. Cambios en esta política</h2>
+                <p>
+                    Podremos actualizar esta política. Publicaremos la versión actualizada en esta misma ubicación y la
+                    fecha de entrada en vigor.
+                </p>
+            </section>
+
+            <!-- Sección 12 -->
+            <section>
+                <h2>12. Contacto</h2>
+                <p>Para dudas o solicitudes sobre privacidad:</p>
+                <p style="text-align: center; font-size: 1.1rem;">
+                    <strong>📧 Ignaciosanchezyuste@gmail.com</strong>
+                </p>
+            </section>
+
+            <!-- Form Section -->
+            <div class="form-section">
+                <h2>🗑️ Solicitar eliminación de datos</h2>
+                <p style="margin-bottom: 20px;">
+                    Si deseas ejercer tu derecho a la eliminación de datos (derecho al olvido), completa el formulario a continuación.
+                    Nos pondremos en contacto contigo en un plazo máximo de 30 días.
+                </p>
+
+                <div id="message" class="message"></div>
+
+                <form id="dataDeleteForm" method="POST" action="https://formspree.io/f/xyzpqrst">
+                    <div class="form-group">
+                        <label for="email">📧 Tu correo electrónico</label>
+                        <input type="email" id="email" name="email" required placeholder="ejemplo@correo.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="request_type">📋 Tipo de solicitud</label>
+                        <select id="request_type" name="request_type" style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 1rem;" required>
+                            <option value="">-- Selecciona una opción --</option>
+                            <option value="complete_deletion">Eliminar completamente mi cuenta y todos los datos</option>
+                            <option value="partial_deletion">Eliminar solo datos específicos</option>
+                            <option value="export_and_delete">Exportar mis datos y eliminar después</option>
+                            <option value="other">Otra solicitud</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="description">📝 Detalles de la solicitud</label>
+                        <textarea id="description" name="description" placeholder="Cuéntanos qué datos deseas eliminar o cómo podemos ayudarte..." required></textarea>
+                    </div>
+
+                    <div class="form-group checkbox">
+                        <input type="checkbox" id="confirm" name="confirm" required>
+                        <label for="confirm">Confirmo que soy el titular de esta cuenta y autorizo la eliminación de mis datos.</label>
+                    </div>
+
+                    <button type="submit" class="submit-btn">Enviar solicitud</button>
+                </form>
+
+                <div style="margin-top: 20px; padding: 15px; background: #e8f4f8; border-radius: 6px;">
+                    <strong>⏱️ Tiempo de respuesta:</strong> Responderemos a tu solicitud en un plazo máximo de 30 días.
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>
+                &copy; 2026 ChillPocket. Todos los derechos reservados.<br>
+                <a href="mailto:Ignaciosanchezyuste@gmail.com">Contactar</a> | 
+                <a href="privacy-policy.html">Política de Privacidad</a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('dataDeleteForm');
+        const messageDiv = document.getElementById('message');
+
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(form);
+            const data = {
+                email: formData.get('email'),
+                request_type: formData.get('request_type'),
+                description: formData.get('description'),
+                confirm: formData.get('confirm'),
+                _subject: 'Nueva solicitud de eliminación de datos - ChillPocket',
+                _template: 'plain'
+            };
+
+            // Mostrar mensaje de carga
+            const submitBtn = form.querySelector('.submit-btn');
+            const originalText = submitBtn.textContent;
+            submitBtn.textContent = 'Enviando...';
+            submitBtn.disabled = true;
+
+            // Enviar formulario a través de Formspree
+            fetch(form.action, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json'
+                },
+                body: formData
+            })
+            .then(response => {
+                if (response.ok) {
+                    messageDiv.textContent = '✅ Solicitud enviada correctamente. Nos pondremos en contacto contigo en breve.';
+                    messageDiv.className = 'message success';
+                    form.reset();
+                } else {
+                    throw new Error('Error en el servidor');
+                }
+            })
+            .catch(error => {
+                messageDiv.textContent = '❌ Error al enviar la solicitud. Por favor, intenta de nuevo o contacta directamente a Ignaciosanchezyuste@gmail.com';
+                messageDiv.className = 'message error';
+            })
+            .finally(() => {
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
+            });
+        });
+
+        // Auto-ocultar mensajes después de 8 segundos
+        function autoHideMessage() {
+            setTimeout(() => {
+                if (messageDiv.classList.contains('success')) {
+                    messageDiv.style.display = 'none';
+                }
+            }, 8000);
+        }
+
+        // Observar cambios en el mensaje
+        const observer = new MutationObserver(autoHideMessage);
+        observer.observe(messageDiv, { attributes: true, attributeFilter: ['class'] });
+    </script>
+</body>
+</html>
