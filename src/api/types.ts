@@ -141,6 +141,26 @@ export type Projection = {
   projected_12_months: number;
 };
 
+export type PlanCode = 'free' | 'plus' | 'family' | 'pro_freelance';
+
+export type PlanLimits = Partial<{
+  budgets: number | null;
+  goals: number | null;
+  recurring: number | null;
+  custom_categories: number | null;
+  history_months: number | null;
+  family_members: number | null;
+}>;
+
+export type PlanFeatures = Partial<{
+  advanced_analytics: boolean;
+  export: boolean;
+  web_access: boolean;
+  cloud_backup: boolean;
+  family_mode: boolean;
+  fiscal_reports: boolean;
+}>;
+
 export type User = {
   id: number;
   name: string;
@@ -150,6 +170,15 @@ export type User = {
   avatar_url: string | null;
   theme: 'light' | 'dark' | 'system';
   created_at: string;
+  // Billing (Fase 1: el backend siempre lo adjunta; existe por compatibilidad).
+  plan_code?: PlanCode;
+  plan_name?: string;
+  plan_source?: string | null;
+  plan_expires_at?: string | null;
+  limits?: PlanLimits;
+  features?: PlanFeatures;
+  is_premium?: boolean;
+  is_web_allowed?: boolean;
 };
 
 export type AuthResponse = { success: true; token: string; user: User; is_new?: boolean };

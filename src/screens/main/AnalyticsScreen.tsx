@@ -18,6 +18,8 @@ import { SpendingHabits } from '../../components/SpendingHabits';
 import { DonutChart } from '../../components/DonutChart';
 import { Sparkline } from '../../components/Sparkline';
 import { MonthPickerModal } from '../../components/MonthPickerModal';
+import { PremiumLock } from '../../components/PremiumLock';
+import { useBilling } from '../../store/useBillingStore';
 import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
 import { paymentMethodLabel, paymentMethodMeta } from '../../utils/paymentMethods';
 import { categoryIonicon } from '../../utils/categoryIcon';
@@ -35,6 +37,8 @@ function rgba(hex: string, alpha: number) {
 export const AnalyticsScreen: React.FC = () => {
   const { palette, mode } = useTheme();
   const { user } = useAuthStore();
+  const billing = useBilling();
+  const canAdvanced = billing.hasFeature('advanced_analytics');
   const navigation = useNavigation<any>();
   const {
     summary,
@@ -326,8 +330,11 @@ export const AnalyticsScreen: React.FC = () => {
               )}
             </Card>
 
-            {/* Proyección mensual (forecast) */}
-            {projection && (
+            {/* Proyección mensual (forecast) — feature Plus */}
+            {!canAdvanced && projection && (
+              <PremiumLock label="Forecast mensual" feature="advanced_analytics" />
+            )}
+            {canAdvanced && projection && (
               <LinearGradient
                 colors={palette.gradientHero as any}
                 start={{ x: 0, y: 0 }}

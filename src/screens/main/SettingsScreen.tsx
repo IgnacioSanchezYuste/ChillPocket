@@ -6,6 +6,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useDataStore } from '../../store/useDataStore';
 import { useOnboardingStore } from '../../store/useOnboardingStore';
+import { useBilling } from '../../store/useBillingStore';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing } from '../../theme/spacing';
 import { Text } from '../../components/Text';
@@ -26,6 +27,7 @@ export const SettingsScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { user, logout, setUser } = useAuthStore();
   const store = useDataStore();
+  const billing = useBilling();
   const toast = useToast();
 
   const [nameSheetOpen, setNameSheetOpen] = useState(false);
@@ -88,6 +90,10 @@ export const SettingsScreen: React.FC = () => {
   };
 
   const onExport = async () => {
+    if (!billing.hasFeature('export')) {
+      navigation.navigate('Paywall', { feature: 'export' });
+      return;
+    }
     setExporting(true);
     try {
       // Aseguramos que tenemos datos recientes
@@ -177,6 +183,20 @@ export const SettingsScreen: React.FC = () => {
             </View>
           </Section>
 
+          <Section title="Suscripción">
+            <Pressable onPress={() => navigation.navigate('Paywall')}>
+              <RowAction
+                icon="sparkles-outline"
+                label="Tu plan"
+                value={
+                  billing.isEarlyAdopter
+                    ? `${billing.planName} · Early adopter`
+                    : billing.planName
+                }
+              />
+            </Pressable>
+          </Section>
+
           <Section title="Datos">
             <Pressable onPress={() => navigation.navigate('Categories')}>
               <RowAction icon="pricetags-outline" label="Categorías" />
@@ -185,7 +205,13 @@ export const SettingsScreen: React.FC = () => {
               <RowAction
                 icon="download-outline"
                 label="Exportar mis datos"
-                value={exporting ? 'Generando…' : 'JSON'}
+                value={
+                  exporting
+                    ? 'Generando…'
+                    : billing.hasFeature('export')
+                    ? 'JSON'
+                    : 'Plus'
+                }
               />
             </Pressable>
             <Pressable onPress={() => { navigation.navigate('Tabs'); useOnboardingStore.getState().restart(); }}>

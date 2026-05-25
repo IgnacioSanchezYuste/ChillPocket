@@ -62,3 +62,25 @@ backend/
 
 ## Identidad de marca / nombre
 La app se llama **ChillPocket**. Tono pastel en claro, sobrio en oscuro. Logo en `assets/` (`adaptive-icon.png`).
+
+## Monetización (Fase 1 — v1.5.0)
+Modelo **freemium** con 4 planes: **Gratis**, **Plus**, **Familia**, **Pro Freelance**.
+
+- **DB** (`backend/update.sql`): `plans` (catálogo con `limits_json` y `features_json`), `user_entitlements`
+  (plan activo por usuario, con `source`: `early_adopter | manual | stripe | revenuecat | lifetime`),
+  `billing_events` (auditoría de webhooks, llega en Fase 2).
+- **Backend** (`backend/index.php`): `getUserEntitlements()` + `attachEntitlement()` inyectan
+  `plan_code, plan_name, limits, features, is_premium, is_web_allowed` en el `user` devuelto por `/me`,
+  `/auth/login`, `/auth/register`, `/auth/google` y el `PUT /me`.
+- **Frontend**: `useBilling()` (`src/store/useBillingStore.ts`) lee del `useAuthStore.user`. Expone
+  `plan, planName, isPremium, isEarlyAdopter, hasFeature(k), getLimit(k)`.
+  Pantalla `PaywallScreen` (`src/screens/main/PaywallScreen.tsx`, ruta `Paywall`), componente reutilizable
+  `PremiumLock` (banner o badge inline), util `track()` en `src/utils/analytics.ts` (no-op, listo para Fase 2).
+- **Early adopters**: la migración hace backfill de todos los usuarios existentes con `plan='plus'`,
+  `source='early_adopter'` → no se rompen sus datos cuando se activen los límites reales.
+- **Fase 1 NO bloquea nada**: enseña paywall, badges y banners, pero no aplica límites duros.
+  Stripe + RevenueCat + webhooks + enforcement duro = Fase 2 (cuando haya cuentas y productos creados).
+
+### Variables de entorno (cuando se conecte Fase 2)
+- Frontend: `EXPO_PUBLIC_REVENUECAT_API_KEY`, `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`.
+- Backend: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `REVENUECAT_WEBHOOK_SECRET` (todavía no en uso).

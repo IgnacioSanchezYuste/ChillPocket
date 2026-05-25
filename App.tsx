@@ -8,12 +8,16 @@ import { ToastProvider } from './src/components/Toast';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { usePreferencesStore } from './src/store/usePreferencesStore';
+import { initPurchases } from './src/billing/purchases';
 
 const Inner: React.FC = () => {
   const { mode } = useTheme();
   const hydratePrefs = usePreferencesStore((s) => s.hydrate);
   useEffect(() => {
     hydratePrefs();
+    // Inicializa RevenueCat lo antes posible. No bloquea el arranque: el
+    // wrapper es no-op si el SDK no está disponible (Expo Go, web, sin API key).
+    initPurchases();
   }, [hydratePrefs]);
   return (
     <>

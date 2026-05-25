@@ -3,7 +3,7 @@ import { View, ActivityIndicator } from 'react-native';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAuthStore } from '../store/useAuthStore';
-import { setUnauthorizedHandler } from '../api/http';
+import { setUnauthorizedHandler, setPlanLimitHandler } from '../api/http';
 import { AuthNavigator } from './AuthNavigator';
 import { AppNavigator } from './AppNavigator';
 import { navigationRef } from './navigationRef';
@@ -17,6 +17,14 @@ export const RootNavigator: React.FC = () => {
     bootstrap();
     setUnauthorizedHandler(() => {
       logout();
+    });
+    // Cualquier endpoint que responda 403 plan_limit_reached abre el Paywall
+    // automáticamente. La pantalla que disparó la petición sigue gestionando
+    // el toast/feedback local; nosotros solo presentamos la salida comercial.
+    setPlanLimitHandler(() => {
+      if (navigationRef.isReady()) {
+        try { navigationRef.navigate('Paywall' as never); } catch { /* sin paywall montado */ }
+      }
     });
   }, []);
 

@@ -188,6 +188,111 @@ function availableBalance(PDO $conn, int $userId): float {
 }
 
 // =====================================================
+// BILLING · entitlements del usuario
+// =====================================================
+// Devuelve el plan activo del usuario (o 'free') con sus límites y features.
+// Si no hay fila activa en user_entitlements → 'free'. Si hay varias activas,
+// se queda con la de mayor "rango" (pro_freelance > family > plus > free).
+function getUserEntitlements(PDO $conn, int $userId): array {
+    $stmt = $conn->prepare("
+        SELECT e.plan_code, e.source, e.expires_at
+        FROM user_entitlements e
+        WHERE e.user_id = :u
+          AND e.is_active = 1
+          AND (e.expires_at IS NULL OR e.expires_at >= CURDATE())
+        ORDER BY
+          CASE e.plan_code
+            WHEN 'pro_freelance' THEN 4
+            WHEN 'family'        THEN 3
+            WHEN 'plus'          THEN 2
+            ELSE 1
+          END DESC
+        LIMIT 1
+    ");
+    $stmt->execute([':u' => $userId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $planCode = $row['plan_code'] ?? 'free';
+
+    $p = $conn->prepare("SELECT name, limits_json, features_json FROM plans WHERE code = :c LIMIT 1");
+    $p->execute([':c' => $planCode]);
+    $plan = $p->fetch(PDO::FETCH_ASSOC);
+
+    $limits   = $plan ? (json_decode((string)$plan['limits_json'],   true) ?: []) : [];
+    $features = $plan ? (json_decode((string)$plan['features_json'], true) ?: []) : [];
+
+    return [
+        'plan_code'      => $planCode,
+        'plan_name'      => $plan['name'] ?? 'Gratis',
+        'plan_source'    => $row['source'] ?? null,
+        'plan_expires_at'=> $row['expires_at'] ?? null,
+        'limits'         => $limits,
+        'features'       => $features,
+        'is_premium'     => $planCode !== 'free',
+        'is_web_allowed' => (bool)($features['web_access'] ?? false),
+    ];
+}
+
+// Une los datos de billing al objeto user que se devuelve al cliente.
+function attachEntitlement(PDO $conn, ?array $user): ?array {
+    if (!$user || !isset($user['id'])) return $user;
+    return array_merge($user, getUserEntitlements($conn, (int)$user['id']));
+}
+
+// Cuenta los recursos del usuario para una entidad concreta (para enforce de
+// límites). Mantenemos las cuentas baratas (queries simples) — se llaman en
+// los POST, así que el throughput es bajo.
+function planCount(PDO $conn, int $userId, string $entity, ?string $month = null): int {
+    switch ($entity) {
+        case 'budgets':
+            // Cuántos presupuestos tiene el usuario en el mes dado (o cualquier mes si no).
+            if ($month !== null) {
+                $stmt = $conn->prepare("SELECT COUNT(*) FROM budgets WHERE user_id = :u AND month_year = :m");
+                $stmt->execute([':u' => $userId, ':m' => $month]);
+            } else {
+                $stmt = $conn->prepare("SELECT COUNT(DISTINCT category_id, month_year) FROM budgets WHERE user_id = :u");
+                $stmt->execute([':u' => $userId]);
+            }
+            return (int)$stmt->fetchColumn();
+        case 'goals':
+            $stmt = $conn->prepare("SELECT COUNT(*) FROM savings_goals WHERE user_id = :u AND is_completed = 0");
+            $stmt->execute([':u' => $userId]);
+            return (int)$stmt->fetchColumn();
+        case 'recurring':
+            $stmt = $conn->prepare("SELECT COUNT(*) FROM recurring_expenses WHERE user_id = :u AND is_active = 1");
+            $stmt->execute([':u' => $userId]);
+            return (int)$stmt->fetchColumn();
+        case 'custom_categories':
+            $stmt = $conn->prepare("SELECT COUNT(*) FROM categories WHERE user_id = :u");
+            $stmt->execute([':u' => $userId]);
+            return (int)$stmt->fetchColumn();
+        default:
+            return 0;
+    }
+}
+
+// Si el usuario supera el límite del plan para `entity`, devuelve la respuesta
+// 403 lista para enviar; si está dentro del límite devuelve null. Pasar `month`
+// solo para 'budgets' (los presupuestos se cuentan por mes).
+function enforcePlanLimit(PDO $conn, int $userId, string $entity, ?string $month = null): ?array {
+    $ent   = getUserEntitlements($conn, $userId);
+    $limit = $ent['limits'][$entity] ?? null;
+    if ($limit === null) return null; // ilimitado
+    $current = planCount($conn, $userId, $entity, $month);
+    if ($current >= (int)$limit) {
+        return [
+            'error'   => true,
+            'code'    => 'plan_limit_reached',
+            'message' => "Has alcanzado el límite de tu plan ({$current}/{$limit}).",
+            'entity'  => $entity,
+            'limit'   => (int)$limit,
+            'current' => $current,
+            'plan'    => $ent['plan_code'],
+        ];
+    }
+    return null;
+}
+
+// =====================================================
 // GOOGLE OAUTH · verificación de ID token
 // =====================================================
 // Verificamos el ID token llamando al endpoint oficial de Google
@@ -461,6 +566,7 @@ $app->post('/auth/register', function (Request $request, Response $response) use
         $conn->commit();
 
         $user = fetchUser($conn, $userId);
+        $user = attachEntitlement($conn, $user);
 
         return jsonResponse($response, [
             'success' => true,
@@ -559,6 +665,8 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
     // Aprovechamos para regenerar transacciones recurrentes pendientes
     try { expandRecurringTransactions($conn, (int)$user['id']); } catch (Throwable $e) {}
 
+    $user = attachEntitlement($conn, $user);
+
     return jsonResponse($response, [
         'success' => true,
         'token'   => tokenForUser($user),
@@ -583,6 +691,8 @@ $app->post('/auth/login', function (Request $request, Response $response) use ($
     // Generar transacciones pendientes inmediatamente al iniciar sesión
     try { expandRecurringTransactions($conn, (int)$user['id']); } catch (Throwable $e) {}
 
+    $user = attachEntitlement($conn, $user);
+
     return jsonResponse($response, [
         'success' => true,
         'token'   => tokenForUser($user),
@@ -598,6 +708,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $jwt  = $request->getAttribute('user');
         $user = fetchUser($conn, (int)$jwt['user_id']);
         if (!$user) return jsonResponse($response, ['error'=>true,'message'=>'Usuario no existe'], 404);
+        $user = attachEntitlement($conn, $user);
         return jsonResponse($response, ['user' => $user]);
     });
 
@@ -635,7 +746,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $stmt = $conn->prepare("UPDATE users SET ".implode(', ', $fields)." WHERE id = :id");
         $stmt->execute($params);
 
-        return jsonResponse($response, ['success'=>true, 'user' => fetchUser($conn, (int)$jwt['user_id'])]);
+        return jsonResponse($response, ['success'=>true, 'user' => attachEntitlement($conn, fetchUser($conn, (int)$jwt['user_id']))]);
     });
 
     $group->put('/me/password', function (Request $request, Response $response) use ($conn) {
@@ -692,6 +803,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if ($name === '') return jsonResponse($response, ['error'=>true,'message'=>'Nombre obligatorio'], 400);
         if (!in_array($type, ['expense','income'], true)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Tipo inválido'], 400);
+        }
+        if ($err = enforcePlanLimit($conn, $uid, 'custom_categories')) {
+            return jsonResponse($response, $err, 403);
         }
         $dup = $conn->prepare("
             SELECT id FROM categories
@@ -1022,7 +1136,12 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
     $group->post('/recurring', function (Request $request, Response $response) use ($conn) {
         $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
         $data = $request->getParsedBody() ?? [];
+
+        if ($err = enforcePlanLimit($conn, $uid, 'recurring')) {
+            return jsonResponse($response, $err, 403);
+        }
 
         $name      = trim((string)($data['name'] ?? ''));
         $amount    = isset($data['amount']) ? (float)$data['amount'] : -1;
@@ -1187,7 +1306,11 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
     $group->post('/savings-goals', function (Request $request, Response $response) use ($conn) {
         $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
         $data = $request->getParsedBody() ?? [];
+        if ($err = enforcePlanLimit($conn, $uid, 'goals')) {
+            return jsonResponse($response, $err, 403);
+        }
         $name   = trim((string)($data['name'] ?? ''));
         $target = isset($data['target_amount']) ? (float)$data['target_amount'] : 0;
         $date   = isset($data['target_date']) && $data['target_date'] !== '' ? (string)$data['target_date'] : null;
@@ -1397,12 +1520,24 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
     $group->post('/budgets', function (Request $request, Response $response) use ($conn) {
         $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
         $data = $request->getParsedBody() ?? [];
         $amount = isset($data['amount']) ? (float)$data['amount'] : -1;
         $month  = (string)($data['month_year'] ?? '');
         $catId  = isset($data['category_id']) && $data['category_id'] !== '' ? (int)$data['category_id'] : null;
         $resetDay = isset($data['reset_day']) ? (int)$data['reset_day'] : 1;
         if ($resetDay < 1 || $resetDay > 28) $resetDay = 1;
+
+        // Enforcement por plan: nº de presupuestos en este mes_year.
+        if (validMonthYear($month) && ($err = enforcePlanLimit($conn, $uid, 'budgets', $month))) {
+            // Si el plan es upsert sobre uno existente, no contamos como "nuevo".
+            // Comprobamos: ¿ya existe budget para (uid, month, cat)?
+            $check = $conn->prepare("SELECT id FROM budgets WHERE user_id = :u AND month_year = :m AND ((:c IS NULL AND category_id IS NULL) OR category_id = :c) LIMIT 1");
+            $check->execute([':u' => $uid, ':m' => $month, ':c' => $catId]);
+            if (!$check->fetch()) {
+                return jsonResponse($response, $err, 403);
+            }
+        }
 
         if (!is_finite($amount) || $amount <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
         if (!validMonthYear($month)) return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido'], 400);

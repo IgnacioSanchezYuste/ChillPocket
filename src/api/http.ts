@@ -26,12 +26,41 @@ export const setUnauthorizedHandler = (cb: () => void) => {
   onUnauthorized = cb;
 };
 
+export type PlanLimitInfo = {
+  entity: string;
+  limit: number;
+  current: number;
+  plan?: string;
+  message?: string;
+};
+
+let onPlanLimit: ((info: PlanLimitInfo) => void) | null = null;
+export const setPlanLimitHandler = (cb: (info: PlanLimitInfo) => void) => {
+  onPlanLimit = cb;
+};
+
+export function isPlanLimitError(e: unknown): PlanLimitInfo | null {
+  const err = e as AxiosError<any>;
+  if (err?.response?.status !== 403) return null;
+  const d = err.response?.data;
+  if (d?.code !== 'plan_limit_reached') return null;
+  return {
+    entity: String(d.entity ?? ''),
+    limit: Number(d.limit ?? 0),
+    current: Number(d.current ?? 0),
+    plan: d.plan,
+    message: d.message,
+  };
+}
+
 http.interceptors.response.use(
   (r) => r,
   (error: AxiosError<any>) => {
     if (error.response?.status === 401) {
       onUnauthorized?.();
     }
+    const planLimit = isPlanLimitError(error);
+    if (planLimit) onPlanLimit?.(planLimit);
     return Promise.reject(error);
   }
 );
