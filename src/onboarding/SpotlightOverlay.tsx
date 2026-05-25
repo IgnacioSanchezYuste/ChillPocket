@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, useWindowDimensions, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
@@ -39,19 +39,44 @@ export const SpotlightOverlay: React.FC<Props> = ({
   stepKey,
 }) => {
   const { palette } = useTheme();
-  const { width: W, height: H } = useWindowDimensions();
+  const { width: winW, height: winH } = useWindowDimensions();
   const anim = useRef(new Animated.Value(0)).current;
+
+  // En Android edge-to-edge, `measureInWindow` (que usan los targets) devuelve
+  // coordenadas en la ventana real. El overlay, aunque sea absoluteFill, puede
+  // tener un origen distinto (status bar / insets) según la build. Para que el
+  // hueco siempre cuadre con el botón resaltado, medimos el propio overlay en
+  // ventana y restamos su origen. Bulletproof en dev, web y release.
+  const rootRef = useRef<View>(null);
+  const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  const measureFrame = useCallback(() => {
+    requestAnimationFrame(() => {
+      const node = rootRef.current;
+      if (!node || typeof node.measureInWindow !== 'function') return;
+      node.measureInWindow((x, y, w, h) => {
+        if (w > 0 && h > 0) setFrame({ x, y, w, h });
+      });
+    });
+  }, []);
 
   useEffect(() => {
     anim.setValue(0);
     Animated.timing(anim, { toValue: 1, duration: 260, useNativeDriver: true }).start();
-  }, [stepKey]);
+    // Re-medir en cada paso por si cambia algo (rotación, navegación...).
+    measureFrame();
+  }, [stepKey, measureFrame]);
 
-  // Hueco con padding (clamp dentro de pantalla).
+  const ox = frame?.x ?? 0;
+  const oy = frame?.y ?? 0;
+  const W = frame?.w ?? winW;
+  const H = frame?.h ?? winH;
+
+  // Hueco con padding, en coordenadas LOCALES al overlay.
   const hole = rect
     ? {
-        x: Math.max(0, rect.x - PAD),
-        y: Math.max(0, rect.y - PAD),
+        x: Math.max(0, rect.x - ox - PAD),
+        y: Math.max(0, rect.y - oy - PAD),
         w: rect.width + PAD * 2,
         h: rect.height + PAD * 2,
       }
@@ -60,15 +85,13 @@ export const SpotlightOverlay: React.FC<Props> = ({
   // Coloca el tooltip arriba o abajo del hueco según haya más espacio.
   const placeBelow = hole ? hole.y + hole.h < H * 0.55 : true;
 
-  const tooltipStyle = anim
-    ? {
-        opacity: anim,
-        transform: [
-          { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
-          { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.98, 1] }) },
-        ],
-      }
-    : {};
+  const tooltipStyle = {
+    opacity: anim,
+    transform: [
+      { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
+      { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.98, 1] }) },
+    ],
+  };
 
   const tooltip = (
     <Animated.View
@@ -106,8 +129,15 @@ export const SpotlightOverlay: React.FC<Props> = ({
     </Animated.View>
   );
 
+  const tipMaxW = Math.min(W - spacing.lg * 2, 420);
+
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    <View
+      ref={rootRef}
+      onLayout={measureFrame}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="box-none"
+    >
       {hole ? (
         <>
           {/* 4 paneles oscuros alrededor del hueco */}
@@ -146,7 +176,7 @@ export const SpotlightOverlay: React.FC<Props> = ({
               ? { top: hole.y + hole.h + spacing.md }
               : { bottom: H - hole.y + spacing.md }
             : { top: 0, bottom: 0, justifyContent: 'center' },
-          { width: Math.min(W - spacing.lg * 2, 420), left: '50%', marginLeft: -Math.min(W - spacing.lg * 2, 420) / 2 },
+          { width: tipMaxW, left: '50%', marginLeft: -tipMaxW / 2 },
         ]}
       >
         {tooltip}
