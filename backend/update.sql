@@ -76,4 +76,20 @@ WHERE NOT EXISTS (
     WHERE e.`user_id` = u.`id` AND e.`is_active` = 1
 );
 
+-- =====================================================
+-- 6) RATE LIMITING en /auth/* (v1.6.0)
+-- =====================================================
+-- Cada fila representa un intento fallido reciente. Los buckets usan el patrón
+-- "ip:<ip>" o "email:<email>" para acumular contadores por separado y bloquear
+-- la cuenta si CUALQUIERA de los dos sobrepasa el umbral en la ventana.
+CREATE TABLE IF NOT EXISTS `auth_attempts` (
+    `id`           INT(11)      NOT NULL AUTO_INCREMENT,
+    `bucket_key`   VARCHAR(128) NOT NULL,
+    `endpoint`     VARCHAR(32)  NOT NULL,
+    `attempted_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_bucket_endpoint_time` (`bucket_key`, `endpoint`, `attempted_at`),
+    KEY `idx_cleanup` (`attempted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 COMMIT;

@@ -7,6 +7,8 @@ import { useAuthStore } from '../../store/useAuthStore';
 import { useDataStore } from '../../store/useDataStore';
 import { useOnboardingStore } from '../../store/useOnboardingStore';
 import { useBilling } from '../../store/useBillingStore';
+import { useSecurityStore } from '../../store/useSecurityStore';
+import { SecuritySetupSheet } from '../modals/SecuritySetupSheet';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing } from '../../theme/spacing';
 import { Text } from '../../components/Text';
@@ -28,7 +30,15 @@ export const SettingsScreen: React.FC = () => {
   const { user, logout, setUser } = useAuthStore();
   const store = useDataStore();
   const billing = useBilling();
+  const security = useSecurityStore();
   const toast = useToast();
+
+  const [securitySheetOpen, setSecuritySheetOpen] = useState(false);
+  const [securityMode, setSecurityMode] = useState<'enable' | 'change' | 'disable'>('enable');
+  const openSecurity = (mode: 'enable' | 'change' | 'disable') => {
+    setSecurityMode(mode);
+    setSecuritySheetOpen(true);
+  };
 
   const [nameSheetOpen, setNameSheetOpen] = useState(false);
   const [pwdSheetOpen, setPwdSheetOpen] = useState(false);
@@ -183,6 +193,21 @@ export const SettingsScreen: React.FC = () => {
             </View>
           </Section>
 
+          <Section title="Seguridad">
+            <Pressable onPress={() => openSecurity(security.enabled ? 'disable' : 'enable')}>
+              <RowAction
+                icon={security.enabled ? 'lock-closed-outline' : 'lock-open-outline'}
+                label="Bloqueo con biometría / PIN"
+                value={security.enabled ? 'Activado' : 'Desactivado'}
+              />
+            </Pressable>
+            {security.enabled && (
+              <Pressable onPress={() => openSecurity('change')}>
+                <RowAction icon="keypad-outline" label="Cambiar PIN" />
+              </Pressable>
+            )}
+          </Section>
+
           <Section title="Suscripción">
             <Pressable onPress={() => navigation.navigate('Paywall')}>
               <RowAction
@@ -266,6 +291,12 @@ export const SettingsScreen: React.FC = () => {
           autoCapitalize="none"
         />
       </Sheet>
+
+      <SecuritySetupSheet
+        visible={securitySheetOpen}
+        mode={securityMode}
+        onClose={() => setSecuritySheetOpen(false)}
+      />
     </SafeAreaView>
   );
 };

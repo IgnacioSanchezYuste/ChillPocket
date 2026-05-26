@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { secureGet } from '../utils/secureStorage';
 
 export const TOKEN_KEY = '@finanzas:token';
 
@@ -13,7 +13,9 @@ export const http = axios.create({
 });
 
 http.interceptors.request.use(async (config) => {
-  const token = await AsyncStorage.getItem(TOKEN_KEY);
+  // Lee el JWT del almacén seguro (Keystore/Keychain) o de AsyncStorage en
+  // entornos donde secure-store no esté disponible.
+  const token = await secureGet(TOKEN_KEY);
   if (token) {
     config.headers = config.headers ?? {};
     (config.headers as any).Authorization = `Bearer ${token}`;

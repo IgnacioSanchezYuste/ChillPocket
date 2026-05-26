@@ -188,6 +188,75 @@ function availableBalance(PDO $conn, int $userId): float {
 }
 
 // =====================================================
+// RATE LIMITING · /auth/*
+// =====================================================
+// Bloquea 5 intentos fallidos en 15 min, por IP y por email (lo que dispare antes).
+// La cuenta se "olvida" al completar un login/register/google con éxito.
+
+function clientIp(Request $req): string {
+    $s = $req->getServerParams();
+    // Hostinger detrás de un proxy: X-Forwarded-For trae la IP real del cliente.
+    $xff = $s['HTTP_X_FORWARDED_FOR'] ?? '';
+    if (is_string($xff) && $xff !== '') {
+        $first = trim(explode(',', $xff)[0]);
+        if ($first !== '') return $first;
+    }
+    return (string)($s['REMOTE_ADDR'] ?? '0.0.0.0');
+}
+
+/**
+ * Devuelve true si el cliente puede intentar (dentro de los límites), false si está bloqueado.
+ * Cuenta intentos en la ventana, sumando por ip y por email por separado.
+ */
+function checkAuthRateLimit(PDO $conn, Request $req, string $endpoint, ?string $email = null, int $maxAttempts = 5, int $windowMin = 15): bool {
+    $ip    = clientIp($req);
+    $since = (new DateTimeImmutable())->modify("-{$windowMin} minutes")->format('Y-m-d H:i:s');
+    $buckets = ['ip:' . $ip];
+    if ($email !== null && $email !== '') $buckets[] = 'email:' . strtolower($email);
+    $stmt = $conn->prepare("
+        SELECT COUNT(*) FROM auth_attempts
+        WHERE bucket_key = :b AND endpoint = :e AND attempted_at >= :since
+    ");
+    foreach ($buckets as $b) {
+        $stmt->execute([':b' => $b, ':e' => $endpoint, ':since' => $since]);
+        if ((int)$stmt->fetchColumn() >= $maxAttempts) return false;
+    }
+    return true;
+}
+
+function recordAuthFailure(PDO $conn, Request $req, string $endpoint, ?string $email = null): void {
+    $ip = clientIp($req);
+    $ins = $conn->prepare("INSERT INTO auth_attempts (bucket_key, endpoint) VALUES (:b, :e)");
+    try { $ins->execute([':b' => 'ip:' . $ip, ':e' => $endpoint]); } catch (Throwable $err) {}
+    if ($email !== null && $email !== '') {
+        try { $ins->execute([':b' => 'email:' . strtolower($email), ':e' => $endpoint]); } catch (Throwable $err) {}
+    }
+    // Limpieza oportunista (1/100): borra registros > 7 días para no engordar la tabla.
+    if (random_int(1, 100) === 1) {
+        try { $conn->exec("DELETE FROM auth_attempts WHERE attempted_at < DATE_SUB(NOW(), INTERVAL 7 DAY)"); } catch (Throwable $err) {}
+    }
+}
+
+function clearAuthAttempts(PDO $conn, Request $req, string $endpoint, ?string $email = null): void {
+    $ip = clientIp($req);
+    $del = $conn->prepare("DELETE FROM auth_attempts WHERE bucket_key = :b AND endpoint = :e");
+    try { $del->execute([':b' => 'ip:' . $ip, ':e' => $endpoint]); } catch (Throwable $err) {}
+    if ($email !== null && $email !== '') {
+        try { $del->execute([':b' => 'email:' . strtolower($email), ':e' => $endpoint]); } catch (Throwable $err) {}
+    }
+}
+
+/** Respuesta estándar 429. */
+function rateLimitedResponse(Response $response, int $windowMin = 15): Response {
+    return jsonResponse($response, [
+        'error'   => true,
+        'code'    => 'rate_limited',
+        'message' => "Demasiados intentos. Inténtalo de nuevo en unos minutos.",
+        'retry_after_minutes' => $windowMin,
+    ], 429);
+}
+
+// =====================================================
 // BILLING · entitlements del usuario
 // =====================================================
 // Devuelve el plan activo del usuario (o 'free') con sus límites y features.
@@ -527,19 +596,34 @@ $app->get('/', function (Request $request, Response $response) {
 // ================= AUTH =================
 $app->post('/auth/register', function (Request $request, Response $response) use ($conn) {
     $data = $request->getParsedBody() ?? [];
+    $emailIn = isset($data['email']) ? trim((string)$data['email']) : '';
+
+    // Rate limit: bloquea abusos antes de tocar nada más.
+    if (!checkAuthRateLimit($conn, $request, 'register', $emailIn !== '' ? $emailIn : null)) {
+        return rateLimitedResponse($response);
+    }
+
     foreach (['name','email','password'] as $f) {
-        if (empty($data[$f])) return jsonResponse($response, ['error'=>true,'message'=>"Falta campo: $f"], 400);
+        if (empty($data[$f])) {
+            recordAuthFailure($conn, $request, 'register', $emailIn !== '' ? $emailIn : null);
+            return jsonResponse($response, ['error'=>true,'message'=>"Falta campo: $f"], 400);
+        }
     }
     if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+        recordAuthFailure($conn, $request, 'register', $emailIn);
         return jsonResponse($response, ['error'=>true,'message'=>'Email inválido'], 400);
     }
     if (strlen((string)$data['password']) < 6) {
+        recordAuthFailure($conn, $request, 'register', $emailIn);
         return jsonResponse($response, ['error'=>true,'message'=>'La contraseña debe tener al menos 6 caracteres'], 400);
     }
 
     $stmt = $conn->prepare("SELECT id FROM users WHERE email = :email");
     $stmt->execute([':email' => $data['email']]);
-    if ($stmt->fetch()) return jsonResponse($response, ['error'=>true,'message'=>'Email ya registrado'], 409);
+    if ($stmt->fetch()) {
+        recordAuthFailure($conn, $request, 'register', $emailIn);
+        return jsonResponse($response, ['error'=>true,'message'=>'Email ya registrado'], 409);
+    }
 
     $currency = strtoupper(trim((string)($data['currency'] ?? 'EUR')));
     if (!preg_match('/^[A-Z]{3}$/', $currency)) $currency = 'EUR';
@@ -568,6 +652,9 @@ $app->post('/auth/register', function (Request $request, Response $response) use
         $user = fetchUser($conn, $userId);
         $user = attachEntitlement($conn, $user);
 
+        // Éxito → limpia los intentos previos para no penalizar al usuario.
+        clearAuthAttempts($conn, $request, 'register', $emailIn);
+
         return jsonResponse($response, [
             'success' => true,
             'token'   => tokenForUser($user),
@@ -576,6 +663,7 @@ $app->post('/auth/register', function (Request $request, Response $response) use
     } catch (Throwable $e) {
         if ($conn->inTransaction()) $conn->rollBack();
         error_log('[auth/register] ' . $e->getMessage());
+        recordAuthFailure($conn, $request, 'register', $emailIn);
         return jsonResponse($response, ['error'=>true,'message'=>'No se pudo crear la cuenta'], 500);
     }
 });
@@ -588,18 +676,27 @@ $app->post('/auth/register', function (Request $request, Response $response) use
 $app->post('/auth/google', function (Request $request, Response $response) use ($conn) {
     $data = $request->getParsedBody() ?? [];
     $idToken = isset($data['id_token']) ? (string)$data['id_token'] : '';
+
+    // Rate limit por IP antes de verificar el token (verificarlo cuesta una llamada a tokeninfo).
+    if (!checkAuthRateLimit($conn, $request, 'google', null)) {
+        return rateLimitedResponse($response);
+    }
+
     if ($idToken === '') {
+        recordAuthFailure($conn, $request, 'google', null);
         return jsonResponse($response, ['error'=>true,'message'=>'Falta id_token'], 400);
     }
 
     $check = verifyGoogleIdToken($idToken);
     if (!$check['ok']) {
+        recordAuthFailure($conn, $request, 'google', null);
         return jsonResponse($response, ['error'=>true,'message'=>'Google: '.$check['reason']], 401);
     }
     $payload = $check['payload'];
     $email = trim((string)($payload['email'] ?? ''));
     $sub   = trim((string)($payload['sub']   ?? ''));
     if ($email === '' || $sub === '') {
+        recordAuthFailure($conn, $request, 'google', null);
         return jsonResponse($response, ['error'=>true,'message'=>'Token sin email/sub'], 401);
     }
     // Exigir email verificado ANTES de enlazar/crear cuenta por email. Sin esto,
@@ -607,6 +704,7 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
     // (toma de cuentas). Google entrega el flag como bool o string.
     $emailVerified = $payload['email_verified'] ?? false;
     if ($emailVerified !== true && $emailVerified !== 'true') {
+        recordAuthFailure($conn, $request, 'google', $email);
         return jsonResponse($response, ['error'=>true,'message'=>'El email de Google no está verificado'], 401);
     }
 
@@ -654,11 +752,13 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
         $conn->commit();
     } catch (Throwable $e) {
         if ($conn->inTransaction()) $conn->rollBack();
+        recordAuthFailure($conn, $request, 'google', $email);
         return jsonResponse($response, ['error'=>true,'message'=>'No se pudo iniciar sesión con Google'], 500);
     }
 
     $user = fetchUser($conn, (int)$userId);
     if (!$user) {
+        recordAuthFailure($conn, $request, 'google', $email);
         return jsonResponse($response, ['error'=>true,'message'=>'Usuario no encontrado'], 500);
     }
 
@@ -666,6 +766,9 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
     try { expandRecurringTransactions($conn, (int)$user['id']); } catch (Throwable $e) {}
 
     $user = attachEntitlement($conn, $user);
+
+    // Éxito → limpia contadores para esa IP y email.
+    clearAuthAttempts($conn, $request, 'google', $email);
 
     return jsonResponse($response, [
         'success' => true,
@@ -676,14 +779,23 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
 });
 
 $app->post('/auth/login', function (Request $request, Response $response) use ($conn) {
-    $data = $request->getParsedBody() ?? [];
-    if (empty($data['email']) || empty($data['password'])) {
+    $data    = $request->getParsedBody() ?? [];
+    $emailIn = isset($data['email']) ? trim((string)$data['email']) : '';
+
+    // Rate limit: bloquea brute-force antes de procesar la contraseña.
+    if (!checkAuthRateLimit($conn, $request, 'login', $emailIn !== '' ? $emailIn : null)) {
+        return rateLimitedResponse($response);
+    }
+
+    if ($emailIn === '' || empty($data['password'])) {
+        recordAuthFailure($conn, $request, 'login', $emailIn !== '' ? $emailIn : null);
         return jsonResponse($response, ['error'=>true,'message'=>'Email y password son obligatorios'], 400);
     }
     $stmt = $conn->prepare("SELECT * FROM users WHERE email = :email LIMIT 1");
-    $stmt->execute([':email' => $data['email']]);
+    $stmt->execute([':email' => $emailIn]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || !password_verify((string)$data['password'], (string)$row['password_hash'])) {
+        recordAuthFailure($conn, $request, 'login', $emailIn);
         return jsonResponse($response, ['error'=>true,'message'=>'Credenciales inválidas'], 401);
     }
 
@@ -692,6 +804,9 @@ $app->post('/auth/login', function (Request $request, Response $response) use ($
     try { expandRecurringTransactions($conn, (int)$user['id']); } catch (Throwable $e) {}
 
     $user = attachEntitlement($conn, $user);
+
+    // Éxito → reset del contador para esa IP+email.
+    clearAuthAttempts($conn, $request, 'login', $emailIn);
 
     return jsonResponse($response, [
         'success' => true,
@@ -956,6 +1071,18 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
         if (!empty($q['payment_method']) && validPaymentMethod($q['payment_method'])) {
             $sql .= " AND t.payment_method = :pm"; $params[':pm'] = $q['payment_method'];
+        }
+        if (isset($q['amount_min']) && $q['amount_min'] !== '' && is_numeric($q['amount_min'])) {
+            $min = (float)$q['amount_min'];
+            if (is_finite($min) && $min >= 0) {
+                $sql .= " AND t.amount >= :amin"; $params[':amin'] = $min;
+            }
+        }
+        if (isset($q['amount_max']) && $q['amount_max'] !== '' && is_numeric($q['amount_max'])) {
+            $max = (float)$q['amount_max'];
+            if (is_finite($max) && $max >= 0) {
+                $sql .= " AND t.amount <= :amax"; $params[':amax'] = $max;
+            }
         }
         if (!empty($q['search'])) {
             $sql .= " AND (t.description LIKE :s OR t.notes LIKE :s)";

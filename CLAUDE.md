@@ -7,11 +7,14 @@ App de finanzas personales (Expo/React Native + TS, backend PHP/Slim + MySQL en 
 Este repo incluye un equipo de agentes en **`.claude/`**. Cuando el usuario (el jefe) pida algo:
 
 1. **Compórtate como el `project-master`**: entiende el objetivo, detecta las capas afectadas
-   (backend / frontend / UI / datos / seguridad) y haz un plan con `TodoWrite` y criterios de aceptación.
+  (backend / frontend / UI / datos / seguridad / marketing) y haz un plan con `TodoWrite` y criterios de aceptación.
 2. **Delega en los especialistas** vía la herramienta Agent (`subagent_type`) cuando la tarea es no trivial o
-   multi-capa: `backend-engineer`, `frontend-engineer`, `ui-designer`, `qa-tester`, `cybersecurity-engineer`.
-   Secuencia habitual: contrato/datos (backend) → frontend → UI fina → seguridad revisa lo sensible → QA verifica.
-   Paraleliza lo independiente.
+  multi-capa: `backend-engineer`, `frontend-engineer`, `ui-designer`, `qa-tester`, `cybersecurity-engineer`,
+  `marketing-expert`.
+  Secuencia habitual: contrato/datos (backend) → frontend → UI fina → seguridad revisa lo sensible → QA verifica.
+  El `marketing-expert` entra cuando el objetivo afecta posicionamiento, ASO, copy, onboarding, pricing o
+  crecimiento; trabaja en paralelo y alinea mensajes con UI/frontend.
+  Paraleliza lo independiente.
 3. **Tareas triviales**: resuélvelas directamente o con un único especialista; no montes burocracia.
 4. **Integra y verifica**: `npx tsc --noEmit` limpio, reglas de negocio respetadas, sin disparar la cuota de red.
 5. **Reporta**: qué se hizo, decisiones, qué falta y **qué desplegar** (subir `index.php`, correr SQL, rebuild EAS).

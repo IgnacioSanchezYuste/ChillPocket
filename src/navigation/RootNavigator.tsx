@@ -8,10 +8,13 @@ import { AuthNavigator } from './AuthNavigator';
 import { AppNavigator } from './AppNavigator';
 import { navigationRef } from './navigationRef';
 import { OnboardingHost } from '../onboarding/OnboardingHost';
+import { useSecurityStore } from '../store/useSecurityStore';
+import { LockScreen } from '../screens/auth/LockScreen';
 
 export const RootNavigator: React.FC = () => {
   const { mode, palette } = useTheme();
   const { token, bootstrapped, bootstrap, logout } = useAuthStore();
+  const locked = useSecurityStore((s) => s.locked && s.enabled);
 
   useEffect(() => {
     bootstrap();
@@ -65,6 +68,7 @@ export const RootNavigator: React.FC = () => {
     <NavigationContainer theme={navTheme} ref={navigationRef}>
       {token ? <AppNavigator /> : <AuthNavigator />}
       {token && <OnboardingHost />}
+      {token && locked && <LockScreen />}
     </NavigationContainer>
   );
 };

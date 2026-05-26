@@ -6,6 +6,7 @@ import { clearGoogleSession } from '../utils/googleSession';
 import { useOnboardingStore } from './useOnboardingStore';
 import { useDataStore } from './useDataStore';
 import { identifyPurchases, signOutPurchases } from '../billing/purchases';
+import { secureGet, secureSet, secureDel, migrateToSecure } from '../utils/secureStorage';
 import type { User } from '../api/types';
 
 const USER_KEY = '@finanzas:user';
@@ -38,7 +39,9 @@ function safeParseUser(raw: string | null): User | null {
 
 async function clearAuthStorage() {
   try {
-    await AsyncStorage.multiRemove([TOKEN_KEY, USER_KEY]);
+    // Token vive en almacén seguro; user (no sensible) en AsyncStorage.
+    await secureDel(TOKEN_KEY);
+    await AsyncStorage.removeItem(USER_KEY);
   } catch {
     /* ignorar */
   }
@@ -73,8 +76,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   bootstrap: async () => {
     try {
+      // Migra cualquier token legacy de AsyncStorage al almacén seguro.
+      await migrateToSecure(TOKEN_KEY);
       const [token, userJson] = await Promise.all([
-        AsyncStorage.getItem(TOKEN_KEY),
+        secureGet(TOKEN_KEY),
         AsyncStorage.getItem(USER_KEY),
       ]);
       const cachedUser = safeParseUser(userJson);
@@ -121,7 +126,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const res = await authApi.login({ email, password });
       assertAuthResponse(res, 'login');
-      await AsyncStorage.setItem(TOKEN_KEY, res.token);
+      await secureSet(TOKEN_KEY, res.token);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
       set({ token: res.token, user: res.user });
       identifyPurchases(res.user.id).catch(() => {});
@@ -135,7 +140,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const res = await authApi.register(data);
       assertAuthResponse(res, 'register');
-      await AsyncStorage.setItem(TOKEN_KEY, res.token);
+      await secureSet(TOKEN_KEY, res.token);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
       set({ token: res.token, user: res.user });
       identifyPurchases(res.user.id).catch(() => {});
@@ -149,7 +154,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const res = await authApi.google(idToken);
       assertAuthResponse(res, 'login');
-      await AsyncStorage.setItem(TOKEN_KEY, res.token);
+      await secureSet(TOKEN_KEY, res.token);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
       set({ token: res.token, user: res.user });
       identifyPurchases(res.user.id).catch(() => {});

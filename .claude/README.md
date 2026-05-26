@@ -11,10 +11,10 @@ Tú eres el jefe: le dices un objetivo y el **Project Master** lo organiza y pon
      ┌─────────────────────┐
      │   PROJECT MASTER     │  planifica · descompone · delega · integra · verifica · reporta
      └─────────┬───────────┘
-   ┌───────┬───┴────┬─────────┬───────────────┐
-   ▼       ▼        ▼         ▼               ▼
- backend frontend  ui      qa-tester   cybersecurity
- engineer engineer designer            engineer
+    ┌───────┬───┴────┬─────────┬───────────────┬───────────────┐
+    ▼       ▼        ▼         ▼               ▼               ▼
+ backend frontend  ui      qa-tester   cybersecurity     marketing
+ engineer engineer designer            engineer           expert
 ```
 
 - El **hilo principal de Claude** actúa como Project Master (lo fija `CLAUDE.md`, que Claude carga solo).
@@ -29,6 +29,7 @@ Tú eres el jefe: le dices un objetivo y el **Project Master** lo organiza y pon
 | `backend-engineer` | API PHP/Slim, MySQL, JWT, negocio | Endpoints, SQL, migraciones, auth de servidor. |
 | `frontend-engineer` | React Native/Expo, stores, API | Pantallas, navegación, estado, integración. |
 | `ui-designer` | Diseño visual / design system | Estética premium, layouts, claro/oscuro, microinteracciones. |
+| `marketing-expert` | Marketing / growth | Posicionamiento, ASO, copy, onboarding, pricing, campañas, research. |
 | `qa-tester` | QA / pruebas | Casos de prueba, repro de bugs, aceptación, regresiones. |
 | `cybersecurity-engineer` | AppSec (defensivo) | Auth, autorización, validación, secretos, CORS, SQLi/XSS. |
 

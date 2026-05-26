@@ -55,6 +55,10 @@ export type TransactionFilter = {
   type?: 'expense' | 'income';
   category_id?: number;
   payment_method?: PaymentMethod;
+  /** Importe mínimo inclusive. */
+  amount_min?: number;
+  /** Importe máximo inclusive. */
+  amount_max?: number;
   search?: string;
   limit?: number;
   offset?: number;
