@@ -31,7 +31,12 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   editing?: Transaction | null;
-  onSaved?: () => void;
+  /**
+   * Callback tras guardar. En creación recibe la transacción creada;
+   * en edición/borrado recibe null (no hay objeto relevante que capturar).
+   * El parámetro es opcional para no romper los callsites que ya no lo usan.
+   */
+  onSaved?: (created?: Transaction | null) => void;
   prefill?: TransactionPrefill | null;
 };
 
@@ -130,8 +135,11 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           notes: notes.trim() || null,
         });
         toast.success('Transacción actualizada');
+        await refreshAll(true);
+        onSaved?.(null);
+        onClose();
       } else {
-        await transactionsApi.create({
+        const created = await transactionsApi.create({
           amount: amt,
           description: description.trim(),
           type,
@@ -144,10 +152,10 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setLastCategory(type, categoryId);
         if (type === 'expense') setLastPaymentMethod(paymentMethod);
         toast.success('Transacción creada');
+        await refreshAll(true);
+        onSaved?.(created);
+        onClose();
       }
-      await refreshAll(true);
-      onSaved?.();
-      onClose();
     } catch (e) {
       toast.error(apiError(e, 'No se pudo guardar'));
     } finally {
@@ -164,7 +172,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
       await transactionsApi.remove(editing.id);
       toast.success('Eliminada');
       await refreshAll(true);
-      onSaved?.();
+      onSaved?.(null);
       onClose();
     } catch (e) {
       toast.error(apiError(e, 'No se pudo eliminar'));

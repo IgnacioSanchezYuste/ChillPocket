@@ -337,7 +337,14 @@
 
 ## 5. Estado actual de las fases
 
-- [ ] Fase 1 — Onboarding personalizado + demo cleanup
+- [x] Fase 1 — Onboarding personalizado + demo cleanup
+  _Completada 2026-05-26. Notas:_
+  - _Captura de IDs requirió cambiar el contrato de `onSaved` en `TransactionSheet` (pasa `Transaction | null`) y `RecurringSheet` (pasa `number | null`). Todos los callsites existentes actualizados con lambdas._
+  - _Se añadió `forcedStartDate` a `RecurringSheet` para el pre-relleno de fecha de cobro en el step `createIncome`._
+  - _`PERSONALIZE_TOTAL` fue 5, ahora es 6 (paso nuevo 4 = objetivo de ahorro; tema pasa a paso 5)._
+  - _La limpieza oportunista se hace en `RootNavigator` (efecto sobre `bootstrapped + token`), hydratando los IDs demo antes de evaluar si hay huérfanos._
+  - _`palette.error` no existe; se usa `palette.danger` para el mensaje de validación del objetivo de ahorro._
+  - _`npx tsc --noEmit` limpio (exit 0)._
 - [ ] Fase 2 — Schema + motor de cierre
 - [ ] Fase 3 — Dashboard modo dual
 - [ ] Fase 4 — Scope en transacciones y metas

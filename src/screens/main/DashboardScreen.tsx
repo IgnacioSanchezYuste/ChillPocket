@@ -332,7 +332,7 @@ export const DashboardScreen: React.FC = () => {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         editing={editing}
-        onSaved={refreshAll}
+        onSaved={() => refreshAll()}
       />
     </View>
   );

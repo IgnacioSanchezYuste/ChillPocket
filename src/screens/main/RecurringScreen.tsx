@@ -165,7 +165,7 @@ export const RecurringScreen: React.FC = () => {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         editing={editing}
-        onSaved={fetchRecurring}
+        onSaved={() => fetchRecurring()}
       />
     </SafeAreaView>
   );

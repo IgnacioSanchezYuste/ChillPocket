@@ -1,7 +1,11 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { transactionsApi, recurringApi } from '../api/endpoints';
+import { useDataStore } from './useDataStore';
 
 const DONE_KEY = '@chillpocket:onboarding_done_v1';
+// Clave separada para los IDs demo: sobrevive crasheos entre creación y borrado.
+const DEMO_IDS_KEY = '@chillpocket:onboarding_demo_ids';
 
 export type OnboardingPhase =
   | 'welcome'
@@ -22,6 +26,17 @@ export type OnboardingDraft = {
   currency: string;
   goal: FinanceGoal | null;
   incomeFrequency: IncomeFrequency | null;
+  /** Salario mensual (o equivalente mensual si semanal). null si variable. */
+  incomeAmount: number | null;
+  /**
+   * Día de cobro:
+   * - mensual: 1-31 (31 = fin de mes)
+   * - semanal: 0-6 (0 = domingo)
+   * - variable: null
+   */
+  incomePayday: number | null;
+  /** Objetivo de ahorro mensual. null si no declarado. */
+  savingsGoalMonthly: number | null;
   theme: 'light' | 'dark' | 'system';
 };
 
@@ -56,12 +71,21 @@ export const TOUR_STEPS = [
 type State = {
   active: boolean;
   phase: OnboardingPhase;
-  personalizeStep: number; // 0..4
+  personalizeStep: number; // 0..5 (ahora 6 sub-pasos, 0-5)
   tourIndex: number;
   draft: OnboardingDraft;
   targets: Record<string, Rect>;
   /** Qué formulario abrir (lo renderiza OnboardingHost). */
   openSheet: null | 'expense' | 'recExpense' | 'recIncome';
+  /** IDs de transacciones demo creadas durante el tuto. Persiste en AsyncStorage. */
+  demoTransactionIds: number[];
+  /** IDs de recurrentes demo creados durante el tuto. Persiste en AsyncStorage. */
+  demoRecurringIds: number[];
+  /**
+   * Flag para el replay del tuto: si hay datos reales al hacer restart(),
+   * los pasos de creación se omiten para no duplicar datos.
+   */
+  skipCreationPhases: boolean;
 
   start: (initial?: Partial<OnboardingDraft>) => void;
   setDraft: (patch: Partial<OnboardingDraft>) => void;
@@ -76,13 +100,57 @@ type State = {
   skipAll: () => Promise<void>;
   /** Para relanzar desde Ajustes. */
   restart: () => void;
+  /** Registra el ID de una transacción demo creada durante el tuto. */
+  addDemoTransactionId: (id: number) => void;
+  /** Registra el ID de un recurrente demo creado durante el tuto. */
+  addDemoRecurringId: (id: number) => void;
+  /** Limpia los arrays de IDs demo (tras borrarlos del servidor). */
+  clearDemoIds: () => void;
+  /**
+   * Borra las entidades demo del servidor iterando los IDs guardados.
+   * Un 404 se ignora (ya borrada). Al final, UNA sola llamada a refreshAll.
+   * No lanza: los errores se tragan para no interrumpir el flujo.
+   */
+  deleteDemoData: () => Promise<void>;
+  /**
+   * Hidrata demoTransactionIds / demoRecurringIds desde AsyncStorage.
+   * Llamar en el bootstrap de la app.
+   */
+  hydrateDemoIds: () => Promise<void>;
 };
+
+/** Parseo tolerante a basura en AsyncStorage (mismo patrón que safeParseUser). */
+function safeParseDemoIds(raw: string | null): { transactionIds: number[]; recurringIds: number[] } {
+  const empty = { transactionIds: [], recurringIds: [] };
+  if (!raw || raw === 'undefined' || raw === 'null') return empty;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return empty;
+    return {
+      transactionIds: Array.isArray(parsed.transactionIds) ? parsed.transactionIds.filter((x: unknown) => typeof x === 'number') : [],
+      recurringIds: Array.isArray(parsed.recurringIds) ? parsed.recurringIds.filter((x: unknown) => typeof x === 'number') : [],
+    };
+  } catch {
+    return empty;
+  }
+}
+
+async function persistDemoIds(transactionIds: number[], recurringIds: number[]) {
+  try {
+    await AsyncStorage.setItem(DEMO_IDS_KEY, JSON.stringify({ transactionIds, recurringIds }));
+  } catch {
+    /* storage no disponible: los IDs quedan en memoria hasta el borrado */
+  }
+}
 
 const emptyDraft: OnboardingDraft = {
   name: '',
   currency: 'EUR',
   goal: null,
   incomeFrequency: null,
+  incomeAmount: null,
+  incomePayday: null,
+  savingsGoalMonthly: null,
   theme: 'system',
 };
 
@@ -102,6 +170,9 @@ export const useOnboardingStore = create<State>((set, get) => ({
   draft: emptyDraft,
   targets: {},
   openSheet: null,
+  demoTransactionIds: [],
+  demoRecurringIds: [],
+  skipCreationPhases: false,
 
   start: (initial) =>
     set({
@@ -110,6 +181,7 @@ export const useOnboardingStore = create<State>((set, get) => ({
       personalizeStep: 0,
       tourIndex: 0,
       openSheet: null,
+      skipCreationPhases: false,
       draft: { ...emptyDraft, ...initial },
     }),
 
@@ -129,7 +201,55 @@ export const useOnboardingStore = create<State>((set, get) => ({
   },
   prevTour: () => set({ tourIndex: Math.max(0, get().tourIndex - 1) }),
 
+  addDemoTransactionId: (id) => {
+    const next = [...get().demoTransactionIds, id];
+    set({ demoTransactionIds: next });
+    persistDemoIds(next, get().demoRecurringIds);
+  },
+
+  addDemoRecurringId: (id) => {
+    const next = [...get().demoRecurringIds, id];
+    set({ demoRecurringIds: next });
+    persistDemoIds(get().demoTransactionIds, next);
+  },
+
+  clearDemoIds: () => {
+    set({ demoTransactionIds: [], demoRecurringIds: [] });
+    AsyncStorage.removeItem(DEMO_IDS_KEY).catch(() => {});
+  },
+
+  deleteDemoData: async () => {
+    const { demoTransactionIds, demoRecurringIds, clearDemoIds } = get();
+    // Borrar transacciones demo una a una; ignorar 404 (ya borrada por el usuario).
+    for (const id of demoTransactionIds) {
+      try {
+        await transactionsApi.remove(id);
+      } catch {
+        // 404 u otro error: ignorar para no interrumpir el flujo
+      }
+    }
+    // Borrar recurrentes demo.
+    for (const id of demoRecurringIds) {
+      try {
+        await recurringApi.remove(id);
+      } catch {
+        // 404 u otro error: ignorar
+      }
+    }
+    // Una sola llamada a refreshAll tras borrar todo.
+    if (demoTransactionIds.length > 0 || demoRecurringIds.length > 0) {
+      try {
+        await useDataStore.getState().refreshAll(true);
+      } catch {
+        /* sin red: los datos se recargarán en el próximo arranque */
+      }
+    }
+    clearDemoIds();
+  },
+
   finish: async () => {
+    // Borrar demo data ANTES de marcar done.
+    await get().deleteDemoData();
     try {
       await AsyncStorage.setItem(DONE_KEY, '1');
     } catch {
@@ -139,6 +259,8 @@ export const useOnboardingStore = create<State>((set, get) => ({
   },
 
   skipAll: async () => {
+    // Borrar demo data ANTES de marcar done.
+    await get().deleteDemoData();
     try {
       await AsyncStorage.setItem(DONE_KEY, '1');
     } catch {
@@ -147,5 +269,27 @@ export const useOnboardingStore = create<State>((set, get) => ({
     set({ active: false, openSheet: null });
   },
 
-  restart: () => set({ active: true, phase: 'welcome', personalizeStep: 0, tourIndex: 0, openSheet: null }),
+  restart: () => {
+    // Si hay datos reales, omitir las fases de creación para no duplicarlos.
+    const { transactions, recurring } = useDataStore.getState();
+    const hasRealData = transactions.length > 0 || recurring.length > 0;
+    set({
+      active: true,
+      phase: 'welcome',
+      personalizeStep: 0,
+      tourIndex: 0,
+      openSheet: null,
+      skipCreationPhases: hasRealData,
+    });
+  },
+
+  hydrateDemoIds: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(DEMO_IDS_KEY);
+      const { transactionIds, recurringIds } = safeParseDemoIds(raw);
+      set({ demoTransactionIds: transactionIds, demoRecurringIds: recurringIds });
+    } catch {
+      /* basura en storage: ignoramos, los arrays quedan vacíos */
+    }
+  },
 }));
