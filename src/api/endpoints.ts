@@ -77,6 +77,8 @@ export const transactionsApi = {
     category_id?: number | null;
     payment_method?: PaymentMethod | null;
     notes?: string | null;
+    /** Fase 4: 'month' (default) afecta al saldo del mes, 'historical' a "Mis ahorros". */
+    scope?: 'month' | 'historical';
   }) =>
     http
       .post<{ success: true; transaction: Transaction }>('/transactions', data)
@@ -123,8 +125,15 @@ export const goalsApi = {
     http.post('/savings-goals', data).then((r) => r.data),
   update: (id: number, data: Partial<SavingsGoal>) =>
     http.put(`/savings-goals/${id}`, data).then((r) => r.data),
-  contribute: (id: number, amount: number) =>
-    http.post<GoalContributeResponse>(`/savings-goals/${id}/contribute`, { amount }).then((r) => r.data),
+  /**
+   * Aporta (amount > 0) o retira (amount < 0) de una meta.
+   * `scope` (Fase 4): contra qué pool valida el saldo (aporte) o a qué pool
+   * va el dinero (retirada). Default 'month'.
+   */
+  contribute: (id: number, amount: number, scope?: 'month' | 'historical') =>
+    http.post<GoalContributeResponse>(`/savings-goals/${id}/contribute`,
+      scope ? { amount, scope } : { amount }
+    ).then((r) => r.data),
   remove: (id: number) => http.delete(`/savings-goals/${id}`).then((r) => r.data),
 };
 

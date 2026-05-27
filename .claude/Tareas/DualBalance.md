@@ -24,7 +24,7 @@
 | Patch extra — wheel picker para "día de cobro" | ✅ implementado | UI sustituye los 28+ botones del onboarding por un selector vertical estilo iOS. Solo JS. |
 | Fase 2 — Schema + motor de cierre | ✅ implementada | Necesita deploy: SQL §8 + FTP de `backend/index.php`. Detalles en §5. |
 | Fase 3 — Dashboard modo dual | ✅ implementada | Solo frontend, sin SQL ni FTP. Confirmado tras §0.0: Fase 2 ya desplegada el 2026-05-27. Detalles en §5. |
-| Fase 4 — Scope en transacciones y metas | ⬜ pendiente | Frontend + ajuste menor en `POST /transactions`, `PUT /transactions/{id}`, `POST /savings-goals/{id}/contribute`. |
+| Fase 4 — Scope en transacciones y metas | ✅ implementada | Requiere **FTP de `backend/index.php`** (no SQL nuevo; la columna `scope` ya existía de Fase 2). Detalles en §5. |
 | Fase 5 — Analítica por mes financiero | ⏸️ deliberadamente aplazada | El propio doc (§Fase 5) dice no tocar hasta que el modelo dual lleve semanas en producción con feedback real. |
 
 ### Estado de deploy real (VERIFICA al arrancar — el usuario puede no haber desplegado)
@@ -49,7 +49,9 @@
 ### Gotchas que NO debes perder de vista
 
 - **Fase 3 ya pinta "Mis ahorros"**: el `BalanceHero` lee `summary.net_total_historical` y `projection.avg_monthly_expense`. Si Fase 2 NO está desplegada, ambos campos faltarán y la card mostrará 0 € y sin runway — fallback OK pero feo.
-- **Filtro de transacciones por modo en cliente** (Fase 3): si añades transacciones con `scope='historical'` (Fase 4) y el usuario está en modo `historical` viendo Movimientos, ten en cuenta que el server solo filtra por `to = period_start - 1`. La inclusión de `scope='historical'` con fecha >= period_start se hace cliente-side; si la lista paginada no las trae, no aparecerán. Cuando se aborde Fase 4, conviene añadir `scope` como query-param al backend `/transactions`.
+- **Filtro de transacciones por modo en cliente** (Fase 3): si añades transacciones con `scope='historical'` (Fase 4) y el usuario está en modo `historical` viendo Movimientos, ten en cuenta que el server solo filtra por `to = period_start - 1`. La inclusión de `scope='historical'` con fecha >= period_start se hace cliente-side; si la lista paginada no las trae, no aparecerán. **Deuda pendiente**: añadir `scope` como query-param al backend `/transactions` (no se hizo en Fase 4 para minimizar el área de cambio).
+- **Saldo del mes calculado en cliente** (Fase 4): el `GoalSheet` calcula `monthAvailable = availableBalance − net_total_historical`. Es exacto en estado coherente, pero si el endpoint `/savings-goals` se llama antes de que `closeFinancialPeriods` haya corrido (caso raro), puede haber discrepancia de un cierre. El backend valida de verdad con `currentPeriodAvailable()`/`historicalAvailable()`, así que el peor caso es que la UI muestre un máximo distinto del que aplica el server (y el server gane).
+- **InsightBanner — forecast detrás del paywall**: el cálculo del cierre proyectado del periodo solo se muestra si `useBilling().hasFeature('advanced_analytics')`. El resto de stats personalizadas (presupuesto diario, días al cobro, % objetivo) están abiertas a todos los planes — son la propuesta de valor del modelo dual.
 - `net_total_historical` cambió de fórmula en Fase 2 (ya no incluye el mes en curso). Si el usuario reporta "ha bajado un poco", es **esperado** — coherente con que la card "Mis ahorros" de Fase 3 mostrará lo cerrado, no lo en curso.
 - `monthly_closures` se rellena retroactivamente con cap **24 cierres/request**. Histórico > 24 meses → varias requests para terminar de poblar. Es intencional.
 - **Surplus negativo BAJA `monthly_closures.surplus`** (sin floor a 0). Respétalo en Fase 3 al pintar "Mis ahorros" — puede ser negativo, hay que comunicarlo bien (decisión cerrada §2).
@@ -419,7 +421,16 @@
   - _`DashboardScreen` filtra la lista "Recientes" según el modo y descarta la pista cuando el usuario interactúa (swipe, dot o botón close)._
   - _`TransactionsScreen` añade `from`/`to` derivados del modo cuando NO hay rango explícito en filtros avanzados (los avanzados prevalecen). Filtro cliente-side complementario para `scope='historical'`. Recarga al cambiar `balanceMode`/`periodStart`._
   - _`npx tsc --noEmit` limpio (exit 0)._
-- [ ] Fase 4 — Scope en transacciones y metas
+- [x] Fase 4 — Scope en transacciones y metas
+  _Completada 2026-05-27. Notas:_
+  - _Backend: helper `validScope()` + helpers `currentPeriodAvailable()` y `historicalAvailable()` (descomposición de availableBalance en los dos pools)._
+  - _`POST /transactions` y `PUT /transactions/{id}` aceptan `scope` ('month' default). El PUT bloquea cambiar el `scope` si la tx está ligada a una meta (`goal_id != null`) → 409. Decisión §2 del plan: las contribuciones a meta tienen scope inmutable._
+  - _`POST /savings-goals/{id}/contribute` acepta `scope`; aporte valida contra `currentPeriodAvailable` o `historicalAvailable` según el pool elegido. La transacción creada hereda el `scope`._
+  - _`GET /transactions` ahora devuelve `t.scope` en la SELECT._
+  - _Frontend: `transactionsApi.create` añade `scope?`; `goalsApi.contribute(id, amount, scope?)` extiende firma; `TransactionSheet` muestra selector "Mover a" + helper text + bloqueo visual si `editing.goal_id`; `GoalSheet` muestra card con ambos pools + selector "Aportar desde / Devolver a" + validación cliente del límite._
+  - _`InsightBanner` enriquecido con presupuesto diario, forecast (Plus), % objetivo, días al cobro. Existentes (delta mes anterior, racha, etc.) se mantienen como fallbacks._
+  - _Review de cybersecurity-engineer verde: scope validado contra enum, PDO parametrizado, `user_id` desde JWT (nunca body), ownership chequeado antes de la lógica de scope, errores neutros al cliente._
+  - _`npx tsc --noEmit` limpio (exit 0)._
 - [ ] Fase 5 — Analítica por mes financiero (opcional)
 
 Cuando termines una fase, **marca la casilla** y añade una breve nota con la fecha y lo que quedó pendiente (si algo).

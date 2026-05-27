@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Sheet } from '../../components/Sheet';
 import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
+import { SegmentedControl } from '../../components/SegmentedControl';
 import { Text } from '../../components/Text';
 import { useToast } from '../../components/Toast';
 import { goalsApi } from '../../api/endpoints';
@@ -25,13 +26,21 @@ type Props = {
 
 type Mode = 'form' | 'move';
 type Direction = 'in' | 'out';
+type Scope = 'month' | 'historical';
 
 export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved }) => {
-  const { fetchGoals, refreshAll, availableBalance } = useDataStore();
+  const { fetchGoals, refreshAll, availableBalance, summary } = useDataStore();
   const { user } = useAuthStore();
   const { palette } = useTheme();
   const toast = useToast();
   const currency = user?.currency || 'EUR';
+  // Fase 4: descomposición de availableBalance en los dos pools.
+  //   availableBalance = saldo del mes en curso + "Mis ahorros"
+  // (ver currentPeriodAvailable / historicalAvailable en backend/index.php).
+  // Calculamos en cliente la parte del mes restando "Mis ahorros" para no
+  // añadir otra petición — el backend mantiene esa invariante.
+  const historicalAvailable = Number(summary?.net_total_historical ?? 0);
+  const monthAvailable = Math.max(0, availableBalance - historicalAvailable);
 
   const [mode, setMode] = useState<Mode>('form');
   const [name, setName] = useState('');
@@ -41,6 +50,7 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
   // Move mode
   const [direction, setDirection] = useState<Direction>('in');
   const [moveAmount, setMoveAmount] = useState('');
+  const [scope, setScope] = useState<Scope>('month');
 
   useEffect(() => {
     if (visible) {
@@ -57,6 +67,7 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
       }
       setDirection('in');
       setMoveAmount('');
+      setScope('month');
     }
   }, [visible, editing]);
 
@@ -95,9 +106,13 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
     if (!editing) return;
     const amt = parseFloat(moveAmount.replace(',', '.'));
     if (!Number.isFinite(amt) || amt <= 0) return toast.error('Importe inválido');
-    // Validaciones cliente (la principal se valida también en backend)
-    if (direction === 'in' && amt > availableBalance) {
-      return toast.error(`Solo tienes ${formatMoney(availableBalance, currency)} disponibles`);
+    // Validaciones cliente (las definitivas las hace el backend).
+    if (direction === 'in') {
+      const limit = scope === 'historical' ? historicalAvailable : monthAvailable;
+      if (amt > limit + 0.001) {
+        const poolName = scope === 'historical' ? 'Mis ahorros' : 'Saldo del mes';
+        return toast.error(`Solo tienes ${formatMoney(limit, currency)} en ${poolName}`);
+      }
     }
     if (direction === 'out' && amt > Number(editing.current_amount)) {
       return toast.error(`La meta solo tiene ${formatMoney(Number(editing.current_amount), currency)}`);
@@ -105,7 +120,7 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
     setSaving(true);
     try {
       const signed = direction === 'in' ? amt : -amt;
-      await goalsApi.contribute(editing.id, signed);
+      await goalsApi.contribute(editing.id, signed, scope);
       await refreshAll(true);
       toast.success(direction === 'in' ? 'Aportación registrada' : 'Retirada registrada');
       onSaved?.();
@@ -185,21 +200,24 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
           <View style={[styles.balanceCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
             <View style={styles.balanceRow}>
               <View style={{ flex: 1 }}>
-                <Text variant="caption" tone="muted">Saldo disponible</Text>
-                <Text variant="h2" weight="semibold" tabular tone={availableBalance > 0 ? 'success' : 'danger'}>
-                  {formatMoney(availableBalance, currency)}
+                <Text variant="caption" tone="muted">Saldo del mes</Text>
+                <Text variant="h2" weight="semibold" tabular tone={monthAvailable > 0 ? 'success' : 'danger'}>
+                  {formatMoney(monthAvailable, currency)}
                 </Text>
               </View>
               <View style={[styles.balanceDivider, { backgroundColor: palette.borderSubtle }]} />
               <View style={{ flex: 1 }}>
-                <Text variant="caption" tone="muted">En la meta</Text>
-                <Text variant="h2" weight="semibold" tabular>
-                  {formatMoney(Number(editing!.current_amount), currency)}
-                </Text>
-                <Text variant="caption" tone="muted">
-                  de {formatMoney(Number(editing!.target_amount), currency)}
+                <Text variant="caption" tone="muted">Mis ahorros</Text>
+                <Text variant="h2" weight="semibold" tabular tone={historicalAvailable >= 0 ? 'success' : 'danger'}>
+                  {formatMoney(historicalAvailable, currency)}
                 </Text>
               </View>
+            </View>
+            <View style={[styles.balanceFooter, { borderTopColor: palette.borderSubtle }]}>
+              <Text variant="caption" tone="muted">
+                En esta meta: {formatMoney(Number(editing!.current_amount), currency)} de{' '}
+                {formatMoney(Number(editing!.target_amount), currency)}
+              </Text>
             </View>
           </View>
 
@@ -222,6 +240,20 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
             />
           </View>
 
+          <View style={{ gap: spacing.xs }}>
+            <Text variant="label" tone="secondary">
+              {direction === 'in' ? 'Aportar desde' : 'Devolver a'}
+            </Text>
+            <SegmentedControl
+              options={[
+                { value: 'month', label: 'Saldo del mes' },
+                { value: 'historical', label: 'Mis ahorros' },
+              ]}
+              value={scope}
+              onChange={setScope}
+            />
+          </View>
+
           <Input
             label="Importe"
             keyboardType="decimal-pad"
@@ -230,7 +262,10 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
             onChangeText={setMoveAmount}
             helper={
               direction === 'in'
-                ? `Máximo ${formatMoney(availableBalance, currency)}`
+                ? `Máximo ${formatMoney(
+                    scope === 'historical' ? historicalAvailable : monthAvailable,
+                    currency,
+                  )}`
                 : `Máximo ${formatMoney(Number(editing!.current_amount), currency)}`
             }
           />
@@ -326,6 +361,11 @@ const styles = StyleSheet.create({
   },
   balanceRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   balanceDivider: { width: 1, height: 36 },
+  balanceFooter: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+  },
   dirRow: { flexDirection: 'row', gap: spacing.sm },
   dirBtn: {
     flex: 1,

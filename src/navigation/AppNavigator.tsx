@@ -22,6 +22,7 @@ import { CategoriesScreen } from '../screens/main/CategoriesScreen';
 import { BudgetsScreen } from '../screens/main/BudgetsScreen';
 import { InvestmentsScreen } from '../screens/main/InvestmentsScreen';
 import { PaywallScreen } from '../screens/main/PaywallScreen';
+import { DayDetailScreen } from '../screens/main/DayDetailScreen';
 
 export type AppStackParamList = {
   Tabs: undefined;
@@ -32,6 +33,7 @@ export type AppStackParamList = {
   Budgets: undefined;
   Investments: undefined;
   Paywall: { feature?: string } | undefined;
+  DayDetail: { date: string };
 };
 
 const Stack = createNativeStackNavigator<AppStackParamList>();
@@ -115,6 +117,7 @@ const AppStack: React.FC = () => (
     <Stack.Screen name="Budgets" component={BudgetsScreen} />
     <Stack.Screen name="Investments" component={InvestmentsScreen} />
     <Stack.Screen name="Paywall" component={PaywallScreen} />
+    <Stack.Screen name="DayDetail" component={DayDetailScreen} />
   </Stack.Navigator>
 );
 

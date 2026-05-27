@@ -144,6 +144,10 @@ function validPaymentMethod(?string $method): bool {
     return in_array($method, ['cash','debit_card','credit_card','bizum','transfer','other'], true);
 }
 
+function validScope(?string $scope): bool {
+    return $scope === null || $scope === '' || in_array($scope, ['month','historical'], true);
+}
+
 function userCanUseCategory(PDO $conn, int $userId, int $categoryId): bool {
     $stmt = $conn->prepare("
         SELECT id FROM categories
@@ -185,6 +189,43 @@ function availableBalance(PDO $conn, int $userId): float {
     ");
     $stmt->execute([':u' => $userId]);
     return (float)($stmt->fetch(PDO::FETCH_ASSOC)['balance'] ?? 0);
+}
+
+/**
+ * Saldo "del mes" disponible para aportar a meta o gastar (Fase 4).
+ * = SUM(income scope='month' desde periodStart) − SUM(expense scope='month' desde periodStart)
+ * No incluye scope='historical' (esas viven en "Mis ahorros") ni transacciones
+ * de periodos anteriores (ya cerrados como surplus).
+ */
+function currentPeriodAvailable(PDO $conn, int $userId): float {
+    $periodStart = currentPeriodStart($conn, $userId);
+    $stmt = $conn->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN type='income'  AND scope='month' THEN amount ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN type='expense' AND scope='month' THEN amount ELSE 0 END), 0) AS bal
+        FROM transactions
+        WHERE user_id = :u AND transaction_date >= :ps
+    ");
+    $stmt->execute([':u' => $userId, ':ps' => $periodStart]);
+    return (float)($stmt->fetch(PDO::FETCH_ASSOC)['bal'] ?? 0);
+}
+
+/**
+ * Saldo "histórico" disponible — "Mis ahorros" (Fase 4).
+ * = SUM(monthly_closures.surplus) + SUM(income scope='historical') − SUM(expense scope='historical')
+ * Misma fórmula que summary.net_total_historical (la fuente de verdad).
+ */
+function historicalAvailable(PDO $conn, int $userId): float {
+    $stmt = $conn->prepare("
+        SELECT
+            COALESCE((SELECT SUM(mc.surplus) FROM monthly_closures mc WHERE mc.user_id = :u), 0)
+          + COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='historical' THEN t.amount ELSE 0 END), 0) AS bal
+        FROM transactions t
+        WHERE t.user_id = :u
+    ");
+    $stmt->execute([':u' => $userId]);
+    return (float)($stmt->fetch(PDO::FETCH_ASSOC)['bal'] ?? 0);
 }
 
 // =====================================================
@@ -780,8 +821,8 @@ $app->get('/', function (Request $request, Response $response) {
             'PUT  /categories/{id}',
             'DELETE /categories/{id}',
             'GET  /transactions?from=&to=&type=&category_id=&payment_method=&search=&limit=&offset=',
-            'POST /transactions              {amount,description,type,transaction_date,category_id?,payment_method?,notes?}',
-            'PUT  /transactions/{id}',
+            'POST /transactions              {amount,description,type,transaction_date,category_id?,payment_method?,notes?,scope?}',
+            'PUT  /transactions/{id}         (campos parciales; scope inmutable si goal_id≠null)',
             'DELETE /transactions/{id}',
             'GET  /recurring',
             'POST /recurring                 {name,amount,frequency,start_date,type?,category_id?,end_date?,notes?}',
@@ -793,7 +834,7 @@ $app->get('/', function (Request $request, Response $response) {
             'GET  /savings-goals',
             'POST /savings-goals             {name,target_amount,target_date?,description?,color?}',
             'PUT  /savings-goals/{id}',
-            'POST /savings-goals/{id}/contribute  {amount}',
+            'POST /savings-goals/{id}/contribute  {amount, scope?: month|historical}',
             'DELETE /savings-goals/{id}',
             'GET  /budgets?month_year=YYYY-MM',
             'POST /budgets                   {amount,month_year,category_id?,reset_day?}',
@@ -1266,7 +1307,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $sql = "
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
-                   t.payment_method, t.recurring_id, t.goal_id,
+                   t.payment_method, t.recurring_id, t.goal_id, t.scope,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t
@@ -1334,6 +1375,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $categoryId  = isset($data['category_id']) && $data['category_id'] !== '' ? (int)$data['category_id'] : null;
         $notes       = isset($data['notes']) ? trim((string)$data['notes']) : null;
         $paymentMethod = isset($data['payment_method']) && $data['payment_method'] !== '' ? (string)$data['payment_method'] : null;
+        // Fase 4: scope opcional ('month' default | 'historical'). Determina si la
+        // transacción afecta al saldo del mes o directamente a "Mis ahorros".
+        $scope       = isset($data['scope']) && $data['scope'] !== '' ? (string)$data['scope'] : 'month';
 
         if ($description === '') return jsonResponse($response, ['error'=>true,'message'=>'Descripción obligatoria'], 400);
         if (!is_finite($amount) || $amount <= 0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
@@ -1344,6 +1388,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (!validPaymentMethod($paymentMethod)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Tipo de pago inválido'], 400);
         }
+        if (!validScope($scope)) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Scope inválido'], 400);
+        }
 
         if ($categoryId !== null) {
             if (!userCanUseCategory($conn, (int)$jwt['user_id'], $categoryId)) {
@@ -1352,19 +1399,19 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
 
         $stmt = $conn->prepare("
-            INSERT INTO transactions (user_id, category_id, amount, description, type, transaction_date, notes, payment_method)
-            VALUES (:u, :c, :a, :d, :t, :td, :n, :pm)
+            INSERT INTO transactions (user_id, category_id, amount, description, type, transaction_date, notes, payment_method, scope)
+            VALUES (:u, :c, :a, :d, :t, :td, :n, :pm, :sc)
         ");
         $stmt->execute([
             ':u'=>(int)$jwt['user_id'], ':c'=>$categoryId, ':a'=>$amount,
             ':d'=>$description, ':t'=>$type, ':td'=>$date, ':n'=>$notes ?: null,
-            ':pm'=>$paymentMethod ?: null
+            ':pm'=>$paymentMethod ?: null, ':sc'=>$scope,
         ]);
         $id = (int)$conn->lastInsertId();
 
         $sel = $conn->prepare("
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
-                   t.payment_method, t.recurring_id, t.goal_id,
+                   t.payment_method, t.recurring_id, t.goal_id, t.scope,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
@@ -1427,6 +1474,28 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
         if (array_key_exists('notes', $data)) {
             $fields[] = 'notes = :notes'; $params[':notes'] = $data['notes'] ?: null;
+        }
+        // Fase 4: permitir cambiar el scope. Las transacciones ligadas a metas
+        // (goal_id != null) tienen scope inmutable (decisión §2 del plan):
+        // para "mover" una contribución entre month/historical se debe retirar
+        // y volver a aportar. Rechazamos el cambio aquí para preservar la
+        // invariante contable.
+        if (array_key_exists('scope', $data)) {
+            $sc = (string)$data['scope'];
+            if (!validScope($sc) || $sc === '') {
+                return jsonResponse($response, ['error'=>true,'message'=>'Scope inválido'], 400);
+            }
+            // Comprobar si la tx está ligada a una meta.
+            $isGoalTx = $conn->prepare("SELECT goal_id FROM transactions WHERE id = :id");
+            $isGoalTx->execute([':id' => $id]);
+            $goalRow = $isGoalTx->fetch(PDO::FETCH_ASSOC);
+            if ($goalRow && $goalRow['goal_id'] !== null) {
+                return jsonResponse($response, [
+                    'error'   => true,
+                    'message' => 'El scope de una contribución a meta es inmutable. Retira y vuelve a aportar para cambiarlo.'
+                ], 409);
+            }
+            $fields[] = 'scope = :sc'; $params[':sc'] = $sc;
         }
 
         if (!$fields) return jsonResponse($response, ['error'=>true,'message'=>'Sin datos para actualizar'], 400);
@@ -1747,6 +1816,14 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $amount = isset($data['amount']) ? (float)$data['amount'] : 0;
         if ($amount === 0.0) return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
 
+        // Fase 4: scope opcional ('month' default | 'historical').
+        // Aporte:    valida contra el saldo del scope elegido (mes o histórico).
+        // Retirada:  la tx ingreso resultante hereda el scope (a dónde va el dinero).
+        $scope = isset($data['scope']) && $data['scope'] !== '' ? (string)$data['scope'] : 'month';
+        if (!validScope($scope) || $scope === '') {
+            return jsonResponse($response, ['error'=>true,'message'=>'Scope inválido'], 400);
+        }
+
         $sel = $conn->prepare("SELECT name, current_amount, target_amount FROM savings_goals WHERE id = :id AND user_id = :u");
         $sel->execute([':id'=>$gid, ':u'=>$uid]);
         $goal = $sel->fetch(PDO::FETCH_ASSOC);
@@ -1754,11 +1831,14 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $current = (float)$goal['current_amount'];
         if ($amount > 0) {
-            $available = availableBalance($conn, $uid);
+            $available = $scope === 'historical'
+                ? historicalAvailable($conn, $uid)
+                : currentPeriodAvailable($conn, $uid);
             if ($amount > $available + 0.001) {
+                $poolName = $scope === 'historical' ? 'Mis ahorros' : 'Saldo del mes';
                 return jsonResponse($response, [
-                    'error'=>true,
-                    'message'=>'Saldo insuficiente. Disponible: ' . number_format($available, 2)
+                    'error'   => true,
+                    'message' => 'Saldo insuficiente en ' . $poolName . '. Disponible: ' . number_format($available, 2),
                 ], 400);
             }
         } else {
@@ -1783,14 +1863,15 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
             $insTx = $conn->prepare("
                 INSERT INTO transactions
-                    (user_id, category_id, amount, description, type, transaction_date, notes, goal_id)
-                VALUES (:u, :c, :a, :d, :t, CURDATE(), :n, :g)
+                    (user_id, category_id, amount, description, type, transaction_date, notes, goal_id, scope)
+                VALUES (:u, :c, :a, :d, :t, CURDATE(), :n, :g, :sc)
             ");
             $insTx->execute([
                 ':u'=>$uid, ':c'=>$catId, ':a'=>$txAmount,
                 ':d'=>$txDescription, ':t'=>$txType,
                 ':n'=>'Movimiento de meta de ahorro',
                 ':g'=>$gid,
+                ':sc'=>$scope,
             ]);
 
             $upd = $conn->prepare("
@@ -2482,6 +2563,13 @@ $errorMiddleware->setErrorHandler(\Slim\Exception\HttpMethodNotAllowedException:
 
 $errorMiddleware->setDefaultErrorHandler(
     function (Request $request, Throwable $e, bool $d, bool $l, bool $ld) use ($app) {
+        // Loggeamos el detalle real en el error_log del servidor (queda en
+        // hPanel → Errors), pero al cliente solo le devolvemos un mensaje
+        // neutro. Nunca exponemos file/line/class/queries en producción.
+        error_log(
+            '[default-error] ' . get_class($e) . ': ' . $e->getMessage()
+            . ' in ' . $e->getFile() . ':' . $e->getLine()
+        );
         $r = $app->getResponseFactory()->createResponse();
         $r->getBody()->write(json_encode(['error'=>true,'message'=>$d ? $e->getMessage() : 'Error interno del servidor']));
         return $r->withHeader('Content-Type','application/json')

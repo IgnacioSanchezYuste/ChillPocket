@@ -5,6 +5,7 @@ import { Sheet } from './Sheet';
 import { Input } from './Input';
 import { Button } from './Button';
 import { Text } from './Text';
+import { DateRangePicker } from './DateRangePicker';
 import { useTheme } from '../theme/ThemeProvider';
 import { spacing, radius } from '../theme/spacing';
 import { PAYMENT_METHODS } from '../utils/paymentMethods';
@@ -80,26 +81,14 @@ export const TransactionFiltersSheet: React.FC<Props> = ({ visible, initial, onC
     >
       <View style={{ gap: spacing.sm }}>
         <Text variant="label" tone="secondary">Rango de fechas</Text>
-        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-          <View style={{ flex: 1 }}>
-            <Input
-              label="Desde"
-              placeholder="YYYY-MM-DD"
-              value={from}
-              onChangeText={setFrom}
-              autoCapitalize="none"
-            />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Input
-              label="Hasta"
-              placeholder="YYYY-MM-DD"
-              value={to}
-              onChangeText={setTo}
-              autoCapitalize="none"
-            />
-          </View>
-        </View>
+        <DateRangePicker
+          from={from || null}
+          to={to || null}
+          onChange={(f, t) => {
+            setFrom(f ?? '');
+            setTo(t ?? '');
+          }}
+        />
       </View>
 
       <View style={{ gap: spacing.sm }}>

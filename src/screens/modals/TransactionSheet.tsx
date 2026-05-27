@@ -54,6 +54,8 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
   const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
+  // Fase 4: scope dual del modelo (mes en curso / "Mis ahorros").
+  const [scope, setScope] = useState<'month' | 'historical'>('month');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -70,6 +72,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setDate(editing.transaction_date);
         setNotes(editing.notes || '');
         setPaymentMethod(editing.payment_method ?? null);
+        setScope(editing.scope ?? 'month');
       } else if (prefill) {
         // Onboarding: formulario precargado con un ejemplo.
         const t = prefill.type ?? 'expense';
@@ -80,6 +83,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setDate(todayISO());
         setNotes('');
         setPaymentMethod(prefill.paymentMethod ?? null);
+        setScope('month');
       } else {
         // Nueva transacción: pre-rellenar con las últimas elecciones del usuario.
         const initialType: 'expense' | 'income' = 'expense';
@@ -90,6 +94,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setDate(todayISO());
         setNotes('');
         setPaymentMethod(lastPaymentMethod);
+        setScope('month');
       }
     }
   }, [visible, editing]);
@@ -115,6 +120,10 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
 
   const filtered = useMemo(() => categories.filter((c) => c.type === type), [categories, type]);
   const generatedFromRecurring = !!editing?.recurring_id;
+  // Las contribuciones a meta tienen scope inmutable (decisión de producto §2
+  // del plan dual). Mostramos el selector deshabilitado para que el usuario
+  // entienda en qué pool vive el movimiento sin poder romper la invariante.
+  const scopeLocked = !!editing?.goal_id;
 
   const onSave = async () => {
     const amt = parseFloat(amount.replace(',', '.'));
@@ -125,6 +134,9 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
     setSaving(true);
     try {
       if (editing) {
+        // Solo enviamos scope si cambió y la tx no está bloqueada (no es
+        // contribución a meta), para evitar el 409 del backend.
+        const scopeChanged = !scopeLocked && (editing.scope ?? 'month') !== scope;
         await transactionsApi.update(editing.id, {
           amount: amt,
           description: description.trim(),
@@ -133,6 +145,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           category_id: categoryId,
           payment_method: paymentMethod,
           notes: notes.trim() || null,
+          ...(scopeChanged ? { scope } : {}),
         });
         toast.success('Transacción actualizada');
         await refreshAll(true);
@@ -147,6 +160,7 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           category_id: categoryId,
           payment_method: paymentMethod,
           notes: notes.trim() || null,
+          scope,
         });
         // Persistir últimas elecciones (solo al crear, no al editar)
         setLastCategory(type, categoryId);
@@ -284,6 +298,27 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
           </ScrollView>
         </View>
       )}
+
+      <View style={{ gap: spacing.xs }}>
+        <Text variant="label" tone="secondary">Mover a</Text>
+        <View style={{ opacity: scopeLocked ? 0.55 : 1 }} pointerEvents={scopeLocked ? 'none' : 'auto'}>
+          <SegmentedControl
+            options={[
+              { value: 'month', label: 'Saldo del mes' },
+              { value: 'historical', label: 'Mis ahorros' },
+            ]}
+            value={scope}
+            onChange={setScope}
+          />
+        </View>
+        <Text variant="caption" tone="muted">
+          {scopeLocked
+            ? 'Las contribuciones a una meta no pueden cambiar de pool. Para moverlas, retira y vuelve a aportar.'
+            : scope === 'historical'
+            ? 'Esta transacción afecta directamente a "Mis ahorros", sin pasar por el saldo del mes.'
+            : 'Forma parte del periodo en curso. Cuando el mes cierre, su efecto pasa a "Mis ahorros".'}
+        </Text>
+      </View>
 
       <Input
         label="Notas (opcional)"

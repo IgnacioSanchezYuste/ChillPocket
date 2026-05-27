@@ -188,13 +188,31 @@ export const PaywallScreen: React.FC = () => {
       navigation.goBack();
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? '');
-      if (msg.includes('PACKAGE_NOT_FOUND')) {
+      if (__DEV__) console.warn('[paywall] compra falló:', msg, e);
+      if (msg === 'NO_OFFERINGS') {
+        toast.error(
+          'El catálogo de planes aún no está disponible. Configura los productos en Google Play y RevenueCat.',
+        );
+      } else if (msg.startsWith('PACKAGE_NOT_FOUND')) {
         toast.error('Ese plan aún no está disponible. Estamos preparándolo.');
-      } else if (msg.includes('userCancelled') || msg.includes('PURCHASE_CANCELLED') || /cancel/i.test(msg)) {
+      } else if (msg === 'SDK_NOT_AVAILABLE') {
+        toast.error('Las compras no están disponibles en esta build.');
+      } else if (
+        msg.includes('userCancelled') ||
+        msg.includes('PURCHASE_CANCELLED') ||
+        /cancel/i.test(msg) ||
+        e?.userCancelled === true
+      ) {
         // silencio: el usuario canceló
       } else {
         track('purchase_failed', { plan: planCode, cycle, error: msg.slice(0, 200) });
-        toast.error('No se pudo completar la compra. Inténtalo de nuevo.');
+        // En __DEV__ mostramos el mensaje real para acelerar la depuración.
+        // En producción dejamos el mensaje genérico (no filtrar internos del SDK).
+        toast.error(
+          __DEV__
+            ? `No se pudo completar la compra: ${msg.slice(0, 140)}`
+            : 'No se pudo completar la compra. Inténtalo de nuevo.',
+        );
       }
     } finally {
       setPurchasing(null);

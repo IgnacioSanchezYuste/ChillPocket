@@ -5,6 +5,8 @@ import { useTheme } from '../theme/ThemeProvider';
 import { spacing, radius } from '../theme/spacing';
 import { Text } from './Text';
 import { formatMoney } from '../utils/format';
+import { usePreferencesStore } from '../store/usePreferencesStore';
+import { useBilling } from '../store/useBillingStore';
 import type { AnalyticsSummary, DailyPoint } from '../api/types';
 
 type Props = {
@@ -24,55 +26,44 @@ function rgba(hex: string, alpha: number) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// Genera UN insight accionable a partir de datos que ya están en memoria.
-// No hace ninguna petición. Prioriza el mensaje más útil para el usuario.
-function buildInsight(summary: AnalyticsSummary, daily: DailyPoint[], currency: string):
-  | { icon: keyof typeof Ionicons.glyphMap; text: string; tone: Tone }
-  | null {
-  const income = Number(summary.total_income) || 0;
-  const expense = Number(summary.total_expense) || 0;
-  const prevExpense = Number(summary.previous?.total_expense) || 0;
-  const saved = Number(summary.saved_this_month) || 0;
-  const recExpense = Number(summary.recurring_monthly?.expense) || 0;
+type PrefsSlice = {
+  incomeAmount: number | null;
+  incomePayday: number | null;
+  savingsGoalMonthly: number | null;
+};
 
-  // 1) Comparativa de gasto con el mes anterior (lo más accionable).
-  if (prevExpense > 0 && expense > 0) {
-    const delta = ((expense - prevExpense) / prevExpense) * 100;
-    if (delta >= 8) {
-      return { icon: 'trending-up', tone: 'warning', text: `Gastas un ${Math.round(delta)}% más que el mes pasado` };
-    }
-    if (delta <= -8) {
-      return { icon: 'trending-down', tone: 'success', text: `Gastas un ${Math.abs(Math.round(delta))}% menos que el mes pasado 👏` };
-    }
-  }
+type BillingSlice = {
+  hasAdvanced: boolean;
+};
 
-  // 2) Racha de días sin gastar (motivacional).
-  const streak = noSpendStreak(daily);
-  if (streak >= 2) {
-    return { icon: 'leaf', tone: 'success', text: `Llevas ${streak} días sin gastar 🔥` };
+/**
+ * Calcula el siguiente periodo a partir del actual, respetando el payday del
+ * usuario (LAST_DAY normaliza si el mes destino no tiene ese día). Espejo del
+ * `nextPeriodStart` del backend.
+ */
+function nextPeriodStartFrom(periodStart: string, payday: number | null): Date {
+  const dt = new Date(`${periodStart}T00:00:00`);
+  const year = dt.getFullYear();
+  const month = dt.getMonth(); // 0-11
+  let nextMonth = month + 1;
+  let nextYear = year;
+  if (nextMonth > 11) {
+    nextMonth = 0;
+    nextYear += 1;
   }
+  if (payday === null || payday < 1 || payday > 31) {
+    return new Date(nextYear, nextMonth, 1);
+  }
+  const lastDay = new Date(nextYear, nextMonth + 1, 0).getDate();
+  const day = Math.min(payday, lastDay);
+  return new Date(nextYear, nextMonth, day);
+}
 
-  // 3) Ahorro real movido a metas este mes.
-  if (saved > 0) {
-    return { icon: 'flag', tone: 'accent', text: `Has movido ${formatMoney(saved, currency)} a tus metas este mes` };
-  }
-
-  // 4) Peso de los gastos fijos sobre los ingresos.
-  if (income > 0 && recExpense > 0) {
-    const pct = Math.round((recExpense / income) * 100);
-    if (pct >= 40) {
-      return { icon: 'repeat', tone: 'warning', text: `Tus gastos fijos son el ${pct}% de tus ingresos` };
-    }
-  }
-
-  // 5) Estado del balance del mes (fallback).
-  const balance = Number(summary.balance) || 0;
-  if (income > 0 || expense > 0) {
-    return balance >= 0
-      ? { icon: 'sparkles', tone: 'success', text: `Vas en positivo este mes (+${formatMoney(balance, currency)})` }
-      : { icon: 'alert-circle', tone: 'danger', text: `Este mes vas en negativo (${formatMoney(balance, currency)})` };
-  }
-  return null;
+function daysBetween(from: Date, to: Date): number {
+  const dayMs = 86400000;
+  const a = new Date(from.getFullYear(), from.getMonth(), from.getDate()).getTime();
+  const b = new Date(to.getFullYear(), to.getMonth(), to.getDate()).getTime();
+  return Math.round((b - a) / dayMs);
 }
 
 function noSpendStreak(daily: DailyPoint[]): number {
@@ -89,11 +80,184 @@ function noSpendStreak(daily: DailyPoint[]): number {
   return streak;
 }
 
+/**
+ * Genera UN insight accionable a partir de datos en memoria. Sin peticiones.
+ * Prioridad:
+ *   1. Presupuesto diario (si el usuario completó el onboarding nuevo).
+ *   2. Forecast del cierre del periodo (Plus).
+ *   3. % objetivo cumplido (si tiene savingsGoalMonthly).
+ *   4. Días hasta el próximo cobro (si quedan ≤ 7 días).
+ *   5. Comparativa con mes anterior.
+ *   6. Racha sin gastar (motivacional).
+ *   7. Ahorro a metas.
+ *   8. Peso de gastos fijos.
+ *   9. Estado del balance del mes (fallback).
+ */
+function buildInsight(
+  summary: AnalyticsSummary,
+  daily: DailyPoint[],
+  currency: string,
+  prefs: PrefsSlice,
+  billing: BillingSlice,
+): { icon: keyof typeof Ionicons.glyphMap; text: string; tone: Tone } | null {
+  const income = Number(summary.total_income) || 0;
+  const expense = Number(summary.total_expense) || 0;
+  const prevExpense = Number(summary.previous?.total_expense) || 0;
+  const saved = Number(summary.saved_this_month) || 0;
+  const recExpense = Number(summary.recurring_monthly?.expense) || 0;
+  const periodStart = summary.current_period_start;
+
+  const hasIncomePlan =
+    prefs.incomeAmount !== null &&
+    prefs.incomeAmount > 0 &&
+    prefs.savingsGoalMonthly !== null &&
+    prefs.savingsGoalMonthly >= 0;
+
+  // 1) Presupuesto diario disponible: cuánto puede gastar hoy y aun cumplir
+  //    el objetivo mensual de ahorro. Necesita ingreso + objetivo + saber
+  //    cuándo termina el periodo en curso.
+  if (hasIncomePlan && periodStart) {
+    const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
+    const endOfPeriod = new Date(endNext);
+    endOfPeriod.setDate(endOfPeriod.getDate() - 1);
+    const today = new Date();
+    const daysLeft = Math.max(1, daysBetween(today, endNext)); // hasta inicio del siguiente
+    const goal = Number(prefs.savingsGoalMonthly) || 0;
+    const inc = Number(prefs.incomeAmount) || 0;
+    const dailyBudget = (inc - goal - expense) / daysLeft;
+    if (Number.isFinite(dailyBudget) && dailyBudget > 0) {
+      return {
+        icon: 'wallet-outline',
+        tone: 'accent',
+        text: `Hoy puedes gastar ${formatMoney(dailyBudget, currency)} y seguir cumpliendo tu objetivo`,
+      };
+    }
+    if (Number.isFinite(dailyBudget) && dailyBudget <= 0 && goal > 0) {
+      return {
+        icon: 'alert-circle',
+        tone: 'danger',
+        text: `Para llegar a tu objetivo de ${formatMoney(goal, currency)} no deberías gastar más este periodo`,
+      };
+    }
+  }
+
+  // 2) Forecast del cierre del periodo (Plus). Solo si tenemos algo de
+  //    actividad y al menos 3 días dentro del periodo para tener señal.
+  if (billing.hasAdvanced && periodStart && income > 0) {
+    const start = new Date(`${periodStart}T00:00:00`);
+    const today = new Date();
+    const elapsed = Math.max(1, daysBetween(start, today) + 1);
+    const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
+    const totalDays = Math.max(elapsed, daysBetween(start, endNext));
+    if (elapsed >= 3 && totalDays > elapsed) {
+      const avgDaily = expense / elapsed;
+      const projectedSpend = avgDaily * totalDays;
+      const projectedNet = income - projectedSpend;
+      if (projectedNet >= 0) {
+        return {
+          icon: 'trending-up',
+          tone: 'success',
+          text: `Si sigues así, cerrarás el mes con +${formatMoney(projectedNet, currency)}`,
+        };
+      }
+      return {
+        icon: 'trending-down',
+        tone: 'warning',
+        text: `Si sigues así, cerrarás el mes con ${formatMoney(projectedNet, currency)}`,
+      };
+    }
+  }
+
+  // 3) % completado del objetivo de ahorro este mes.
+  if (hasIncomePlan && prefs.savingsGoalMonthly && prefs.savingsGoalMonthly > 0) {
+    const goal = Number(prefs.savingsGoalMonthly);
+    const balance = Number(summary.balance) || 0;
+    if (balance > 0) {
+      const pct = Math.min(100, Math.round((balance / goal) * 100));
+      return {
+        icon: 'flag-outline',
+        tone: pct >= 60 ? 'success' : 'accent',
+        text: `Llevas ${formatMoney(balance, currency)} ahorrados este mes (${pct}% del objetivo)`,
+      };
+    }
+  }
+
+  // 4) Días hasta el próximo cobro (countdown).
+  if (periodStart && prefs.incomePayday) {
+    const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
+    const today = new Date();
+    const daysToPay = daysBetween(today, endNext);
+    if (daysToPay >= 0 && daysToPay <= 7) {
+      const phrase =
+        daysToPay === 0
+          ? 'Hoy es tu día de cobro 💸'
+          : daysToPay === 1
+          ? 'Mañana es tu próximo cobro'
+          : `Te quedan ${daysToPay} días hasta tu próximo cobro`;
+      return { icon: 'calendar-outline', tone: 'accent', text: phrase };
+    }
+  }
+
+  // 5) Comparativa con el mes anterior (existente).
+  if (prevExpense > 0 && expense > 0) {
+    const delta = ((expense - prevExpense) / prevExpense) * 100;
+    if (delta >= 8) {
+      return { icon: 'trending-up', tone: 'warning', text: `Gastas un ${Math.round(delta)}% más que el mes pasado` };
+    }
+    if (delta <= -8) {
+      return { icon: 'trending-down', tone: 'success', text: `Gastas un ${Math.abs(Math.round(delta))}% menos que el mes pasado 👏` };
+    }
+  }
+
+  // 6) Racha de días sin gastar.
+  const streak = noSpendStreak(daily);
+  if (streak >= 2) {
+    return { icon: 'leaf', tone: 'success', text: `Llevas ${streak} días sin gastar 🔥` };
+  }
+
+  // 7) Ahorro a metas (existente).
+  if (saved > 0) {
+    return { icon: 'flag', tone: 'accent', text: `Has movido ${formatMoney(saved, currency)} a tus metas este mes` };
+  }
+
+  // 8) Peso de los gastos fijos sobre los ingresos.
+  if (income > 0 && recExpense > 0) {
+    const pct = Math.round((recExpense / income) * 100);
+    if (pct >= 40) {
+      return { icon: 'repeat', tone: 'warning', text: `Tus gastos fijos son el ${pct}% de tus ingresos` };
+    }
+  }
+
+  // 9) Estado del balance del mes (fallback).
+  const balance = Number(summary.balance) || 0;
+  if (income > 0 || expense > 0) {
+    return balance >= 0
+      ? { icon: 'sparkles', tone: 'success', text: `Vas en positivo este mes (+${formatMoney(balance, currency)})` }
+      : { icon: 'alert-circle', tone: 'danger', text: `Este mes vas en negativo (${formatMoney(balance, currency)})` };
+  }
+  return null;
+}
+
 export const InsightBanner: React.FC<Props> = ({ summary, daily, currency }) => {
   const { palette } = useTheme();
+  const incomeAmount = usePreferencesStore((s) => s.incomeAmount);
+  const incomePayday = usePreferencesStore((s) => s.incomePayday);
+  const savingsGoalMonthly = usePreferencesStore((s) => s.savingsGoalMonthly);
+  const billing = useBilling();
+  const hasAdvanced = billing.hasFeature('advanced_analytics');
+
   const insight = useMemo(
-    () => (summary ? buildInsight(summary, daily, currency) : null),
-    [summary, daily, currency]
+    () =>
+      summary
+        ? buildInsight(
+            summary,
+            daily,
+            currency,
+            { incomeAmount, incomePayday, savingsGoalMonthly },
+            { hasAdvanced },
+          )
+        : null,
+    [summary, daily, currency, incomeAmount, incomePayday, savingsGoalMonthly, hasAdvanced],
   );
   if (!insight) return null;
 

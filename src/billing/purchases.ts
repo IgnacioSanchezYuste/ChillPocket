@@ -101,6 +101,14 @@ export async function getOfferingPackages(): Promise<RCPackage[] | null> {
     const offerings = await s.getOfferings();
     const current = offerings?.current ?? null;
     const pkgs = current?.availablePackages as RCPackage[] | undefined;
+    if (__DEV__) {
+      console.log('[purchases] getOfferings →', {
+        hasCurrent: !!current,
+        currentId: current?.identifier ?? null,
+        packagesCount: pkgs?.length ?? 0,
+        packageIds: (pkgs ?? []).map((p) => p.identifier),
+      });
+    }
     return pkgs ?? [];
   } catch (e) {
     if (__DEV__) console.warn('[purchases] getOfferings falló', e);
@@ -109,7 +117,19 @@ export async function getOfferingPackages(): Promise<RCPackage[] | null> {
 }
 
 /** Lanza el flujo de compra para un Package concreto. Lanza si el usuario
- *  cancela o si falla. El backend recibirá el alta vía webhook RC (Fase 2.1). */
+ *  cancela o si falla. El backend recibirá el alta vía webhook RC (Fase 2.1).
+ *
+ *  Códigos de error (en el mensaje del Error lanzado):
+ *  - SDK_NOT_AVAILABLE: el SDK nativo no se cargó / configure() no corrió.
+ *  - NO_OFFERINGS: la cuenta de RC no tiene Offering "current" o el Offering
+ *    no tiene Packages. Causa típica: faltan productos en Play Console o el
+ *    Offering "default" no está marcado como Current en el dashboard de RC.
+ *  - PACKAGE_NOT_FOUND:<id>: hay Offering con Packages, pero ninguno con ese
+ *    identifier. El identifier del Package en RC debe coincidir exactamente
+ *    con la convención `${plan}_${cycle}` (ver PACKAGE_ID arriba).
+ *  - Cualquier otro mensaje proviene del SDK nativo de RevenueCat (incluyendo
+ *    cancelaciones del usuario, errores de red, productos sin precio, etc.).
+ */
 export async function purchasePackageById(packageId: string): Promise<void> {
   const s = loadSDK();
   if (!s || !configured) {
@@ -117,9 +137,25 @@ export async function purchasePackageById(packageId: string): Promise<void> {
   }
   // @ts-ignore
   const offerings = await s.getOfferings();
-  const pkgs: RCPackage[] = offerings?.current?.availablePackages ?? [];
+  const current = offerings?.current ?? null;
+  const pkgs: RCPackage[] = current?.availablePackages ?? [];
+  if (!current || pkgs.length === 0) {
+    if (__DEV__) {
+      console.warn('[purchases] sin offerings', {
+        hasCurrent: !!current,
+        packagesCount: pkgs.length,
+      });
+    }
+    throw new Error('NO_OFFERINGS');
+  }
   const pkg = pkgs.find((p) => p.identifier === packageId);
   if (!pkg) {
+    if (__DEV__) {
+      console.warn('[purchases] package no encontrado', {
+        packageId,
+        available: pkgs.map((p) => p.identifier),
+      });
+    }
     throw new Error(`PACKAGE_NOT_FOUND:${packageId}`);
   }
   // @ts-ignore

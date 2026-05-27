@@ -444,7 +444,12 @@ export const AnalyticsScreen: React.FC = () => {
 
             {/* Hábitos de gasto */}
             {daily.length > 0 && (
-              <SpendingHabits monthYear={summary?.month_year || currentMonthYear()} daily={daily} currency={currency} />
+              <SpendingHabits
+                monthYear={summary?.month_year || currentMonthYear()}
+                daily={daily}
+                currency={currency}
+                onDayPress={(date) => navigation.navigate('DayDetail', { date })}
+              />
             )}
 
             {/* Por tipo de pago + Presupuestos (2 columnas en desktop) */}
