@@ -8,6 +8,56 @@
 
 ---
 
+## 0.0. HANDOFF — lee esto ANTES de hacer nada (estado a 2026-05-27)
+
+> Esta sección la añade el project-master al final de cada sesión para que el
+> siguiente agente sepa exactamente dónde se quedó todo. Las fases 1 y 2 ya
+> tienen código en el repo; **el deploy backend puede o no haberse hecho**
+> cuando empieces — confírmalo con el usuario al arrancar.
+
+### Estado del código (en el repo, NO necesariamente en producción)
+
+| Fase | Estado código | Notas |
+|---|---|---|
+| Fase 1 — Onboarding personalizado + demo cleanup | ✅ implementada | Solo JS; sin deploy backend; Metro la sirve al dev client. Detalles en §5. |
+| Patch extra — límite `recurring` plan free 1→3 | ✅ implementado | SQL en `backend/update.sql` §7. Sin esto el tuto se atascaba en el step de ingreso. |
+| Patch extra — wheel picker para "día de cobro" | ✅ implementado | UI sustituye los 28+ botones del onboarding por un selector vertical estilo iOS. Solo JS. |
+| Fase 2 — Schema + motor de cierre | ✅ implementada | Necesita deploy: SQL §8 + FTP de `backend/index.php`. Detalles en §5. |
+| Fase 3 — Dashboard modo dual | ⬜ pendiente — empieza aquí | Solo frontend; **requiere Fase 2 desplegada**. Spec en §3.1-§3.5. |
+| Fase 4 — Scope en transacciones y metas | ⬜ pendiente | Frontend + ajuste menor en `POST /transactions`, `PUT /transactions/{id}`, `POST /savings-goals/{id}/contribute`. |
+| Fase 5 — Analítica por mes financiero | ⏸️ deliberadamente aplazada | El propio doc (§Fase 5) dice no tocar hasta que el modelo dual lleve semanas en producción con feedback real. |
+
+### Estado de deploy real (VERIFICA al arrancar — el usuario puede no haber desplegado)
+
+| Componente | Cómo confirmar antes de tocar nada |
+|---|---|
+| Dev build Android con `react-native-purchases` autolinkeado | Pregunta al usuario. (Construido por EAS el 2026-05-25; URL: https://expo.dev/accounts/nachonsennn/projects/Finanzas/builds/ab36a2a7-b147-47a5-8a2f-28b9a37408ef) |
+| SQL §7 (`recurring=3`) ejecutado en phpMyAdmin | Pregunta. Comprueba consultando `SELECT JSON_EXTRACT(limits_json, '$.recurring') FROM plans WHERE code='free'` si te dan acceso |
+| SQL §8 (`scope`, `monthly_closures`, columnas `users.*`) ejecutado | Pregunta. Comprueba con `SHOW TABLES LIKE 'monthly_closures'` |
+| `backend/index.php` con Fase 2 (FTP) | Pregunta. Si dudas, golpea `GET /analytics/all` con un JWT y mira si `summary.current_period_start` aparece en el JSON |
+| JS local sirviendo via Metro | `npm install` + `npx expo start -c`. Confirma que `npx tsc --noEmit` da exit 0 |
+
+> **Si Fase 2 NO está desplegada**, NO empieces Fase 3. Pide al usuario que ejecute primero `update.sql` §7 + §8 en phpMyAdmin **y** suba `index.php` por FTP (en ese orden). Sin eso, `current_period_start` y `scope` no existen en la respuesta y Fase 3 fallará silenciosamente.
+
+### Orden de deploy correcto (si el usuario aún no lo ha hecho)
+
+1. phpMyAdmin → ejecutar §7 y §8 de `backend/update.sql` (son idempotentes; reejecutar no rompe).
+2. FTP → subir `backend/index.php` (sobreescribir).
+3. `npx expo start -c` (Metro con cache limpia).
+4. Validación: en el dev client, ver que la Analítica sigue funcionando + verificar `summary.current_period_start` en la respuesta.
+
+### Gotchas que NO debes perder de vista
+
+- `net_total_historical` cambió de fórmula en Fase 2 (ya no incluye el mes en curso). Si el usuario reporta "ha bajado un poco", es **esperado** — coherente con que la card "Mis ahorros" de Fase 3 mostrará lo cerrado, no lo en curso.
+- `monthly_closures` se rellena retroactivamente con cap **24 cierres/request**. Histórico > 24 meses → varias requests para terminar de poblar. Es intencional.
+- **Surplus negativo BAJA `monthly_closures.surplus`** (sin floor a 0). Respétalo en Fase 3 al pintar "Mis ahorros" — puede ser negativo, hay que comunicarlo bien (decisión cerrada §2).
+- Cache compartida en backend: `$_paydayCache` y `$_periodStartCache` evitan queries duplicadas a `users`. Si añades nuevas llamadas a `currentPeriodStart()`, no te preocupes — es free después de la primera.
+- `/analytics/summary` mantiene la fórmula antigua de `net_total_historical` (deuda menor, sin caller activo). NO la toques en Fase 3 a menos que descubras que la necesitas.
+- El frontend pre-Fase-3 sigue funcionando con Fase 2 backend ya desplegado — el contrato es 100% retrocompatible. Es decir: si el usuario sigue usando una build vieja por un tiempo, no rompe nada.
+- `react-native-purchases` ya está en `package.json` y autolinkeado en el dev build de 2026-05-25. NO reinstalar a menos que se reconstruya el binario.
+
+---
+
 ## 0. Antes de empezar (OBLIGATORIO leer)
 
 1. **`.claude/knowledge/app-features.md`** §10 (Modelo financiero dual) y §11 (Onboarding rediseñado) — la especificación funcional completa, con todas las reglas de negocio.
@@ -20,6 +70,10 @@
 > Memoria del proyecto: `dual-balance-model.md` tiene el resumen rápido.
 
 ## 1. Estado actual (lo que vas a encontrar)
+
+> **⚠️ Esta sección describe el código ANTES de iniciar la implementación (sesión inicial 2026-05-26).**
+> Para el estado actual tras Fases 1+2, ver §0.0 (HANDOFF) y §5 (Estado actual de las fases).
+> Se mantiene como registro histórico del punto de partida.
 
 - Modelo único de saldo: `net_total_historical = SUM(income) − SUM(expense)` sobre todo el historial. Frontend lo lee de `summary.net_total_historical`.
 - **Onboarding** (`src/onboarding/OnboardingHost.tsx`): la fase `personalize` tiene 5 sub-pasos (0..4): name, currency, goal, incomeFrequency, theme. NO pide salario ni objetivo de ahorro. Tras personalize entra en spotlight: `createExpense` → `createRecurringExpense` → `createIncome` → `tour` → `success`. Los formularios precargados crean transacciones/recurrentes **reales** en BD que **no se borran nunca** (bug actual).

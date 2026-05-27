@@ -19,17 +19,15 @@ billing, ver `Billing.md` en este mismo directorio y `app-features.md` en
 
 ## 🔝 Prioridad alta v2
 
-7. **Modelo dual "Saldo del mes" + "Mis ahorros" + onboarding personalizado** — **L** · Backend sí
-   Aprobado tras consulta del equipo (ver `.claude/knowledge/app-features.md` §10-11).
-   - Backend: nueva columna `transactions.scope`, tabla `monthly_closures`, función `closeFinancialPeriods` lazy idempotente, columnas en `users` (`income_reference`, `income_payday`, `savings_goal_monthly`).
-   - Frontend: `BalanceHero` con swipe entre modos, `useDataStore.balanceMode`, filtro implícito en transacciones, selector "Aportar desde" en `GoalSheet`, onboarding con input adaptativo + paso de objetivo de ahorro, **borrado de demo data por IDs al finalizar tuto**, replay del tuto que omite pasos de creación.
-   - Reglas clave decididas: mes negativo **baja** el ahorro (honestidad); analítica sigue siendo **mes natural** en v1 del cambio; reset siempre mensual aunque la frecuencia sea semanal.
-   - Implementación por fases (más detalle en `app-features.md` §10):
-     1. Onboarding personalizado + demo cleanup (solo frontend, sin SQL).
-     2. SQL + motor de cierre (backend puro, retrocompatible).
-     3. Dashboard modo dual (swipe + filtros).
-     4. Scope en transacciones y metas.
-     5. Migrar analítica a mes financiero (opcional, fase posterior).
+7. **Modelo dual "Saldo del mes" + "Mis ahorros" + onboarding personalizado** — **L** · Backend sí · 🟡 En curso
+   Plan de implementación detallado en **`.claude/Tareas/DualBalance.md`** (5 fases). Spec funcional en `.claude/knowledge/app-features.md` §10-11. Estado:
+   - ✅ **Fase 1** — Onboarding personalizado + demo cleanup (frontend; sin deploy backend). Completada 2026-05-26.
+   - ✅ **Patches extra** — Límite `recurring` plan free 1→3 (SQL §7) y wheel picker para "día de cobro" en onboarding. Completados 2026-05-26.
+   - ✅ **Fase 2** — Schema + motor de cierre (`transactions.scope`, `monthly_closures`, `users.income_payday/savings_goal_monthly`, `closeFinancialPeriods()` lazy idempotente, `summary.current_period_start` en `/analytics/all`). Completada 2026-05-27. **Pendiente: deploy SQL §7+§8 + FTP de `index.php`.**
+   - ⬜ **Fase 3** — Dashboard modo dual (swipe en `BalanceHero`, `useDataStore.balanceMode`, filtro implícito en transacciones). **Pendiente; empezar aquí en la próxima sesión.**
+   - ⬜ **Fase 4** — Scope en transacciones y metas (selector en `TransactionSheet`, "Aportar desde" en `GoalSheet`, stats personalizadas en `InsightBanner`).
+   - ⏸️ **Fase 5** — Migrar analítica a mes financiero (deliberadamente aplazada hasta tener feedback real del modelo dual).
+   - Reglas clave decididas (NO replantear): mes negativo **baja** Mis ahorros (honestidad); analítica sigue siendo **mes natural** hasta Fase 5; reset siempre mensual aunque la frecuencia sea semanal; cap 24 cierres por request (cuota Hostinger).
 
 7. **Notificaciones y recordatorios inteligentes** — **L** · Backend sí
    Avisos al alcanzar 80/100% del presupuesto, recurrente próximo a cobrarse (1-3 días antes), meta cumplida, recordatorio diario de registrar gastos.

@@ -64,8 +64,8 @@
 ## Analítica (protegidas)
 | Método | Ruta | Notas |
 |---|---|---|
-| GET | `/analytics/all` | **PREFERIDO.** `?month_year,months,days` → bundle: `summary, monthly, categories, category_comparison, payment_methods, trends, projection, daily`. **1 sola petición** = ahorra conexiones MySQL. El front (`useDataStore.fetchAnalytics`) usa este. |
-| GET | `/analytics/summary` | `?month_year` → `AnalyticsSummary` (income, expense, balance, savings_ratio, net_total_historical, recurring_monthly, previous, saved_this_month...). |
+| GET | `/analytics/all` | **PREFERIDO.** `?month_year,months,days` → bundle: `summary, monthly, categories, category_comparison, payment_methods, trends, projection, daily`. **1 sola petición** = ahorra conexiones MySQL. El front (`useDataStore.fetchAnalytics`) usa este. **Fase 2 DualBalance**: `summary` ahora incluye `current_period_start: 'YYYY-MM-DD'` (inicio del periodo financiero del usuario) y `net_total_historical` se calcula como `SUM(monthly_closures.surplus)` + transacciones `scope='historical'` (excluye el periodo en curso). Retrocompatible: el resto del shape no cambia. |
+| GET | `/analytics/summary` | `?month_year` → `AnalyticsSummary` (income, expense, balance, savings_ratio, net_total_historical, recurring_monthly, previous, saved_this_month...). **Ojo: mantiene la fórmula antigua de `net_total_historical` (deuda menor, sin caller activo en frontend)**. Usar `/analytics/all` para el cálculo nuevo. |
 | GET | `/analytics/monthly` | `?months` → `{monthly:[{month_year,income,expense}]}` |
 | GET | `/analytics/categories` | `?month_year` → `{categories:[CategoryStat]}` |
 | GET | `/analytics/category-comparison` | `?months` → `{rows}` (por mes y categoría; alimenta el carrusel). |
@@ -74,6 +74,13 @@
 | GET | `/analytics/projection` | `Projection` (medias 3 meses + recurrentes). |
 
 > Los endpoints individuales se conservan por compatibilidad, pero **en pantallas usa siempre `/analytics/all`**.
+
+## Middleware lazy (corre en `requireAuth` antes de cada handler protegido)
+
+Estos helpers se ejecutan automáticamente en cada request autenticada. Si fallan, se loguean en `error_log` y la request continúa (no rompen la API).
+
+- `expandRecurringTransactions($conn, $userId)` — Genera las transacciones que tocan de los recurrentes activos del usuario hasta hoy. Idempotente vía `UNIQUE (user_id, recurring_id, transaction_date)`.
+- `closeFinancialPeriods($conn, $userId)` (Fase 2 DualBalance) — Cierra los periodos financieros pasados que aún no tengan fila en `monthly_closures`. **Cap 24 cierres por request** (cuota Hostinger). Calcula `surplus = SUM(income) − SUM(expense)` de las transacciones con `scope='month'` dentro de cada periodo. Idempotente vía `UNIQUE (user_id, period_start)`. Comparte cache con `currentPeriodStart()` para no consultar `users.income_payday` dos veces (`$_paydayCache`, `$_periodStartCache`).
 
 ## Auth, CORS y seguridad (resumen)
 - Middleware de grupo valida el `Bearer` JWT y mete `userId` en el request. Todas las consultas filtran por `user_id`.

@@ -6,11 +6,15 @@
 ## Tablas
 
 ### `users`
-`id, name, email, password_hash, currency, timezone, avatar_url, google_sub, theme, created_at`
+`id, name, email, password_hash, currency, timezone, avatar_url, google_sub, theme, income_reference, income_payday, savings_goal_monthly, created_at`
 - `password_hash`: `password_hash()` de PHP (bcrypt). Usuarios solo-Google llevan password aleatoria no usable.
 - `google_sub`: el `sub` del ID token de Google. **UNIQUE** (`uniq_google_sub`). Permite login Google y enlazar
   una cuenta de email existente al iniciar con Google por primera vez.
 - `currency` (p.ej. `EUR`), `timezone` (`Europe/Madrid`), `theme` (`light|dark|system`).
+- **Modelo dual (Fase 2 de DualBalance)**:
+  - `income_reference` `DECIMAL(10,2) NULL`: salario neto declarado por el usuario en onboarding (referencia para presupuesto diario y "Mis ahorros"; **no** crea transacciones por sí solo).
+  - `income_payday` `TINYINT NULL` (1-31): día del mes que cobra. Define el "periodo financiero" del usuario (de `payday` a `payday-1` del mes siguiente). `NULL` o fuera de rango → periodo = mes natural. Día 31 normaliza a `LAST_DAY` cuando el mes no lo tenga.
+  - `savings_goal_monthly` `DECIMAL(10,2) NULL`: objetivo de ahorro mensual del usuario (usado por `InsightBanner` para mensajes personalizados).
 
 ### `categories`
 `id, user_id (NULL = sistema/global), name, color (hex), icon, type ('expense'|'income'), created_at`
@@ -21,10 +25,13 @@
 
 ### `transactions`
 `id, user_id, amount, description, type, transaction_date, notes, payment_method, recurring_id, goal_id,
- category_id, created_at, updated_at`
+ category_id, scope, created_at, updated_at`
 - `payment_method`: `cash | debit_card | credit_card | bizum | transfer | other` (nullable).
 - `recurring_id` → FK `recurring_expenses(id)` **ON DELETE SET NULL**. Marca transacciones generadas por un recurrente.
 - `goal_id` → FK `savings_goals(id)` **ON DELETE SET NULL**. Marca contribuciones a metas (modelo sobre).
+- `scope` `ENUM('month','historical') NOT NULL DEFAULT 'month'` (Fase 2 de DualBalance): clasifica la transacción en el modelo dual.
+  - `'month'` → cuenta para "Saldo del mes" (el periodo financiero en curso) y, una vez cerrado, contribuye al `surplus` que se acumula en `monthly_closures`.
+  - `'historical'` → no cuenta para el mes; va directo a "Mis ahorros". Lo elige el usuario en `TransactionSheet` (Fase 4).
 - **UNIQUE `(user_id, recurring_id, transaction_date)`** (`uniq_user_recurring_date`): hace **idempotente** la
   generación perezosa de recurrentes (no se duplican aunque se ejecute varias veces).
 - Índices: `idx_recurring`, `idx_goal`.
@@ -42,6 +49,21 @@
 ### `savings_goals`
 `id, user_id, name, target_amount, current_amount, target_date, description, color, icon, is_completed (0|1)`
 - El front calcula `progress_pct` y `days_remaining` (vienen ya en la respuesta).
+
+### `monthly_closures` (Fase 2 — modelo dual)
+`id, user_id, period_start, period_end, surplus, closed_at`
+- Un registro por **periodo financiero ya cerrado** del usuario. El periodo va de `payday` a `payday-1` del mes siguiente, o mes natural si el usuario no tiene `income_payday`.
+- `surplus` `DECIMAL(10,2)` = `SUM(income) − SUM(expense)` SOLO de transacciones con `scope='month'` dentro del periodo. **Puede ser negativo** (mes de déficit → baja "Mis ahorros"; decisión cerrada en DualBalance §2: sin floor a 0, por honestidad).
+- **UNIQUE `(user_id, period_start)`** (`uniq_user_period`): hace idempotente el `INSERT IGNORE` del motor de cierre.
+- `KEY (user_id, period_end)` (`idx_user_period_end`): acelera ordenaciones y filtros por periodo cerrado.
+- FK `user_id → users(id) ON DELETE CASCADE`.
+
+## Modelo dual "Saldo del mes / Mis ahorros" (Fase 2 — DualBalance)
+- **Saldo del mes** = ingresos − gastos del **periodo financiero en curso** (no necesariamente mes natural), solo transacciones `scope='month'`.
+- **Mis ahorros** (`net_total_historical`) = `SUM(monthly_closures.surplus)` + transacciones `scope='historical'` (income − expense). **NO incluye el periodo en curso** — eso es deliberado y evita doble conteo con "Saldo del mes".
+- Periodo del usuario: si `users.income_payday` está definido, va de día `payday` del mes pasado al día `payday-1` del actual (normalizando con `LAST_DAY` cuando el mes no tenga ese día). Si `NULL`, mes natural.
+- `closeFinancialPeriods($conn, $userId)` se ejecuta lazy en `requireAuth` (igual que `expandRecurringTransactions`); cierra hasta **24 periodos por request** (cap duro para cuota Hostinger) usando `INSERT IGNORE`. Si el usuario tiene histórico > 24 meses, varias requests sucesivas terminan de poblar.
+- Cache en memoria por request: `$_paydayCache` y `$_periodStartCache` evitan queries duplicadas a `users.income_payday`.
 
 ## Modelo "sobre" de metas de ahorro (envelope) — IMPORTANTE
 Ahorrar dinero **mueve dinero de verdad**, no es solo un contador:
