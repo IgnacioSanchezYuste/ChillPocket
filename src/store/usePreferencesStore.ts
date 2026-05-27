@@ -28,6 +28,8 @@ type Prefs = {
   incomePayday: number | null;
   /** Objetivo de ahorro mensual declarado en el onboarding. */
   savingsGoalMonthly: number | null;
+  /** Fase 3: si el usuario ya ha visto la pista de swipe del BalanceHero. */
+  seenBalanceSwipeTooltip: boolean;
 };
 
 const defaults: Prefs = {
@@ -38,6 +40,7 @@ const defaults: Prefs = {
   incomeAmount: null,
   incomePayday: null,
   savingsGoalMonthly: null,
+  seenBalanceSwipeTooltip: false,
 };
 
 type State = Prefs & {
@@ -52,6 +55,7 @@ type State = Prefs & {
     incomePayday?: number | null;
     savingsGoalMonthly?: number | null;
   }) => void;
+  setSeenBalanceSwipeTooltip: (seen: boolean) => void;
 };
 
 async function persist(snap: Prefs) {
@@ -80,6 +84,7 @@ export const usePreferencesStore = create<State>((set, get) => ({
             incomeAmount: typeof parsed.incomeAmount === 'number' ? parsed.incomeAmount : null,
             incomePayday: typeof parsed.incomePayday === 'number' ? parsed.incomePayday : null,
             savingsGoalMonthly: typeof parsed.savingsGoalMonthly === 'number' ? parsed.savingsGoalMonthly : null,
+            seenBalanceSwipeTooltip: parsed.seenBalanceSwipeTooltip === true,
           });
         }
       }
@@ -111,6 +116,12 @@ export const usePreferencesStore = create<State>((set, get) => ({
     set(patch);
     persist(snapshot(get(), patch));
   },
+
+  setSeenBalanceSwipeTooltip: (seen) => {
+    if (get().seenBalanceSwipeTooltip === seen) return;
+    set({ seenBalanceSwipeTooltip: seen });
+    persist(snapshot(get(), { seenBalanceSwipeTooltip: seen }));
+  },
 }));
 
 function snapshot(s: Prefs, patch: Partial<Prefs>): Prefs {
@@ -122,6 +133,7 @@ function snapshot(s: Prefs, patch: Partial<Prefs>): Prefs {
     incomeAmount: s.incomeAmount,
     incomePayday: s.incomePayday,
     savingsGoalMonthly: s.savingsGoalMonthly,
+    seenBalanceSwipeTooltip: s.seenBalanceSwipeTooltip,
     ...patch,
   };
 }

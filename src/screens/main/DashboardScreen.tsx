@@ -13,7 +13,9 @@ import { LineChart } from 'react-native-chart-kit';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
+import { usePreferencesStore } from '../../store/usePreferencesStore';
 import { useTheme } from '../../theme/ThemeProvider';
+import { filterByBalanceMode } from '../../utils/balanceMode';
 import { spacing, radius } from '../../theme/spacing';
 import { useContentWidth, useBreakpoint } from '../../theme/layout';
 import { Text } from '../../components/Text';
@@ -40,13 +42,18 @@ export const DashboardScreen: React.FC = () => {
     summary,
     trends,
     daily,
+    projection,
     transactions,
     transactionsLoading,
     transactionsLoadedAt,
     analyticsMonth,
+    balanceMode,
+    setBalanceMode,
     refreshAll,
     fetchAnalytics,
   } = useDataStore();
+  const seenSwipeHint = usePreferencesStore((s) => s.seenBalanceSwipeTooltip);
+  const setSeenSwipeHint = usePreferencesStore((s) => s.setSeenBalanceSwipeTooltip);
   const showRecentSkeleton = transactionsLoading && transactionsLoadedAt === 0;
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -65,8 +72,21 @@ export const DashboardScreen: React.FC = () => {
   };
 
   const currency = user?.currency || 'EUR';
-  const recent = transactions.slice(0, 5);
+  const periodStart = summary?.current_period_start;
+  const visibleTxs = useMemo(
+    () => filterByBalanceMode(transactions, balanceMode, periodStart),
+    [transactions, balanceMode, periodStart],
+  );
+  const recent = visibleTxs.slice(0, 5);
   const selectedMonth = summary?.month_year || analyticsMonth || currentMonthYear();
+  const handleModeChange = useCallback(
+    (m: 'month' | 'historical') => {
+      setBalanceMode(m);
+      // Cualquier interacción con la card descarta la pista.
+      if (!seenSwipeHint) setSeenSwipeHint(true);
+    },
+    [setBalanceMode, seenSwipeHint, setSeenSwipeHint],
+  );
 
   const selectMonth = (m: string) => {
     setMonthPickerOpen(false);
@@ -147,15 +167,21 @@ export const DashboardScreen: React.FC = () => {
             </Pressable>
           </View>
 
-          {/* Hero saldo */}
+          {/* Hero saldo (modo dual: Saldo del mes ⇄ Mis ahorros) */}
           <View style={{ paddingHorizontal: spacing.lg }}>
             <BalanceHero
+              mode={balanceMode}
+              onModeChange={handleModeChange}
+              currency={currency}
               balance={summary?.balance ?? 0}
               income={summary?.total_income ?? 0}
               expense={summary?.total_expense ?? 0}
               savingsRatio={summary?.savings_ratio ?? 0}
               savedThisMonth={summary?.saved_this_month ?? 0}
-              currency={currency}
+              historicalAmount={summary?.net_total_historical ?? 0}
+              avgMonthlyExpense={projection?.avg_monthly_expense}
+              showSwipeHint={!seenSwipeHint && balanceMode === 'month'}
+              onDismissSwipeHint={() => setSeenSwipeHint(true)}
             />
           </View>
 

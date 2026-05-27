@@ -22,6 +22,7 @@ import { TransactionFiltersSheet, countActiveFilters, type AdvancedFilters } fro
 import { transactionsApi, type TransactionFilter } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { useToast } from '../../components/Toast';
+import { filterByBalanceMode } from '../../utils/balanceMode';
 import type { Transaction } from '../../api/types';
 
 type TypeFilter = 'all' | 'expense' | 'income';
@@ -31,7 +32,8 @@ export const TransactionsScreen: React.FC = () => {
   const { palette } = useTheme();
   const { user } = useAuthStore();
   const toast = useToast();
-  const { categories, fetchCategories } = useDataStore();
+  const { categories, fetchCategories, balanceMode, summary } = useDataStore();
+  const periodStart = summary?.current_period_start;
 
   // Filtros básicos (los inline)
   const [filter, setFilter] = useState<TypeFilter>('all');
@@ -62,14 +64,33 @@ export const TransactionsScreen: React.FC = () => {
   }, [search]);
 
   // Construye el filtro listo para la API a partir del estado actual.
+  // Si el usuario NO ha fijado rango de fechas en filtros avanzados, aplicamos
+  // el filtro implícito del modo dual (Fase 3): "Saldo del mes" muestra desde
+  // el inicio del periodo financiero; "Mis ahorros" muestra lo anterior.
   const buildFilter = useCallback(
     (nextOffset: number): TransactionFilter => {
       const f: TransactionFilter = { limit: PAGE_SIZE, offset: nextOffset };
       if (filter !== 'all') f.type = filter;
       if (categoryId !== null) f.category_id = categoryId;
       if (searchDebounced) f.search = searchDebounced;
+      const hasExplicitDates = Boolean(adv.from || adv.to);
       if (adv.from) f.from = adv.from;
       if (adv.to) f.to = adv.to;
+      if (!hasExplicitDates && periodStart) {
+        if (balanceMode === 'month') {
+          f.from = periodStart;
+        } else {
+          // Día anterior al inicio del periodo actual (YYYY-MM-DD).
+          const d = new Date(`${periodStart}T00:00:00`);
+          if (!Number.isNaN(d.getTime())) {
+            d.setDate(d.getDate() - 1);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            f.to = `${y}-${m}-${day}`;
+          }
+        }
+      }
       if (adv.amount_min !== undefined) {
         const n = parseFloat(String(adv.amount_min));
         if (Number.isFinite(n) && n >= 0) f.amount_min = n;
@@ -81,7 +102,7 @@ export const TransactionsScreen: React.FC = () => {
       if (adv.payment_method) f.payment_method = adv.payment_method;
       return f;
     },
-    [filter, categoryId, searchDebounced, adv]
+    [filter, categoryId, searchDebounced, adv, balanceMode, periodStart]
   );
 
   // Carga la primera página (reset). Cancela cualquier carga obsoleta.
@@ -126,10 +147,11 @@ export const TransactionsScreen: React.FC = () => {
     setRefreshing(false);
   };
 
-  // Recarga al cambiar filtros, búsqueda o foco. Las categorías se cargan una vez.
+  // Recarga al cambiar filtros, búsqueda, modo del balance o foco.
+  // Las categorías se cargan una vez.
   useEffect(() => {
     loadFirstPage();
-  }, [filter, categoryId, searchDebounced, adv]);
+  }, [filter, categoryId, searchDebounced, adv, balanceMode, periodStart]);
 
   useFocusEffect(
     useCallback(() => {
@@ -137,6 +159,16 @@ export const TransactionsScreen: React.FC = () => {
       // Refresca por si se ha creado/editado en otro lugar.
       loadFirstPage();
     }, [])
+  );
+
+  // El filtro implícito por modo (Fase 3) se aplica cliente-side encima de la
+  // respuesta paginada del servidor. Si el usuario fijó fechas explícitas,
+  // esas mandan y el modo no interviene.
+  const hasExplicitDates = Boolean(adv.from || adv.to);
+  const visibleItems = useMemo(
+    () =>
+      hasExplicitDates ? items : filterByBalanceMode(items, balanceMode, periodStart),
+    [items, hasExplicitDates, balanceMode, periodStart],
   );
 
   // Agrupa por fecha relativa: Hoy / Ayer / Esta semana / Este mes / <Mes año>.
@@ -156,17 +188,17 @@ export const TransactionsScreen: React.FC = () => {
       if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return 'Este mes';
       return monthLabel(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
     };
-    for (const t of items) {
+    for (const t of visibleItems) {
       const title = titleFor(t.transaction_date);
       if (!buckets.has(title)) { buckets.set(title, []); order.push(title); }
       buckets.get(title)!.push(t);
     }
     return order.map((title) => ({ title, data: buckets.get(title)! }));
-  }, [items]);
+  }, [visibleItems]);
 
   const activeAdvanced = countActiveFilters(adv);
   const isFirstLoad = loading && items.length === 0;
-  const subtitle = `${items.length} mov.${hasMore ? '+' : ''}${activeAdvanced > 0 ? ` · ${activeAdvanced} filtros` : ''}`;
+  const subtitle = `${visibleItems.length} mov.${hasMore ? '+' : ''}${activeAdvanced > 0 ? ` · ${activeAdvanced} filtros` : ''}`;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>

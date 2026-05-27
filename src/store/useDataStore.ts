@@ -77,6 +77,10 @@ type DataState = {
   analyticsLoadedAt: number;
   fetchAnalytics: (month?: string, force?: boolean) => Promise<void>;
 
+  // Modo dual del BalanceHero / filtros implícitos (Fase 3). Efímero por sesión.
+  balanceMode: 'month' | 'historical';
+  setBalanceMode: (mode: 'month' | 'historical') => void;
+
   // Cross-cutting
   refreshAll: (force?: boolean) => Promise<void>;
   reset: () => void;
@@ -106,6 +110,7 @@ const empty = {
   projection: null,
   analyticsMonth: currentMonthYear(),
   analyticsLoadedAt: 0,
+  balanceMode: 'month' as 'month' | 'historical',
 };
 
 const fresh = (loadedAt: number, force?: boolean) =>
@@ -198,6 +203,8 @@ export const useDataStore = create<DataState>((set, get) => ({
       set({ analyticsLoading: false });
     }
   },
+
+  setBalanceMode: (mode) => set({ balanceMode: mode }),
 
   refreshAll: async (force) => {
     await Promise.all([
