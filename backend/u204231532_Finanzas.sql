@@ -107,7 +107,7 @@ CREATE TABLE `plans` (
 --
 
 INSERT INTO `plans` (`id`, `code`, `name`, `is_active`, `limits_json`, `features_json`, `created_at`) VALUES
-(1, 'free', 'Gratis', 1, '{\"budgets\":2,\"goals\":2,\"recurring\":1,\"custom_categories\":8,\"history_months\":3}', '{\"advanced_analytics\":false,\"export\":false,\"web_access\":false,\"cloud_backup\":false,\"family_mode\":false,\"fiscal_reports\":false}', '2026-05-25 08:10:05'),
+(1, 'free', 'Gratis', 1, '{\"budgets\":2,\"goals\":2,\"recurring\":3,\"custom_categories\":8,\"history_months\":3}', '{\"advanced_analytics\":false,\"export\":false,\"web_access\":false,\"cloud_backup\":false,\"family_mode\":false,\"fiscal_reports\":false}', '2026-05-25 08:10:05'),
 (2, 'plus', 'Plus', 1, '{\"budgets\":null,\"goals\":null,\"recurring\":null,\"custom_categories\":null,\"history_months\":null}', '{\"advanced_analytics\":true,\"export\":true,\"web_access\":true,\"cloud_backup\":true,\"family_mode\":false,\"fiscal_reports\":false}', '2026-05-25 08:10:05'),
 (3, 'family', 'Familia', 1, '{\"budgets\":null,\"goals\":null,\"recurring\":null,\"custom_categories\":null,\"history_months\":null,\"family_members\":5}', '{\"advanced_analytics\":true,\"export\":true,\"web_access\":true,\"cloud_backup\":true,\"family_mode\":true,\"fiscal_reports\":false}', '2026-05-25 08:10:05'),
 (4, 'pro_freelance', 'Pro Freelance', 1, '{\"budgets\":null,\"goals\":null,\"recurring\":null,\"custom_categories\":null,\"history_months\":null}', '{\"advanced_analytics\":true,\"export\":true,\"web_access\":true,\"cloud_backup\":true,\"family_mode\":false,\"fiscal_reports\":true}', '2026-05-25 08:10:05');

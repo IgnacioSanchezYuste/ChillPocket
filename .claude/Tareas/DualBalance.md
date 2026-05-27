@@ -345,7 +345,14 @@
   - _La limpieza oportunista se hace en `RootNavigator` (efecto sobre `bootstrapped + token`), hydratando los IDs demo antes de evaluar si hay huérfanos._
   - _`palette.error` no existe; se usa `palette.danger` para el mensaje de validación del objetivo de ahorro._
   - _`npx tsc --noEmit` limpio (exit 0)._
-- [ ] Fase 2 — Schema + motor de cierre
+- [x] Fase 2 — Schema + motor de cierre
+  _Completada 2026-05-27. Notas:_
+  - _Migración SQL §8 añadida al final de `backend/update.sql`: `transactions.scope`, tabla `monthly_closures`, columnas `users.income_reference/income_payday/savings_goal_monthly`. Idempotente con guards `information_schema`._
+  - _Backend: helpers `getUserPayday()` (con caché), `currentPeriodStart()` (con caché), `nextPeriodStart()`, `closeFinancialPeriods()` (cap 24, INSERT IGNORE, try/catch en `requireAuth`)._
+  - _`/analytics/all`: añadido `summary.current_period_start` (additivo, retrocompatible). `net_total_historical` ahora suma `monthly_closures.surplus` + transacciones `scope='historical'`. NO incluye el mes en curso._
+  - _Frontend: `scope?` y `current_period_start?` opcionales en `src/api/types.ts` (sin uso aún; se consumen en Fase 3)._
+  - _QA atrapó query duplicada a `users.income_payday`; arreglado extrayendo `getUserPayday()` con cache compartida → 1 query por request._
+  - _Deuda menor (no bloqueante): `/analytics/summary` mantiene la fórmula antigua de `net_total_historical` (endpoint sin caller activo; revisar si se usa en Fase 3+)._
 - [ ] Fase 3 — Dashboard modo dual
 - [ ] Fase 4 — Scope en transacciones y metas
 - [ ] Fase 5 — Analítica por mes financiero (opcional)

@@ -33,6 +33,8 @@ export type Transaction = {
   category_icon: string | null;
   created_at: string;
   updated_at: string;
+  /** Fase 2: determina si la transacción afecta al saldo del mes o a "Mis ahorros". */
+  scope?: 'month' | 'historical';
 };
 
 export type Recurring = {
@@ -100,6 +102,8 @@ export type AnalyticsSummary = {
   previous: { total_income: number; total_expense: number };
   /** Suma neta de movimientos de metas en el mes: aportes - retiradas. */
   saved_this_month: number;
+  /** Fase 2: inicio del periodo financiero actual ('YYYY-MM-DD'). Opcional para no romper el frontend de Fase 1. */
+  current_period_start?: string;
 };
 
 export type MonthlyPoint = { month_year: string; income: number; expense: number };

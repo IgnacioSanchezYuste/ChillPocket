@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, TextInput, Platform } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { View, StyleSheet, ScrollView, Pressable, TextInput, Platform, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -585,6 +585,14 @@ type FrequencyStepProps = {
 const FrequencyStep: React.FC<FrequencyStepProps> = ({ palette, draft, amountText, setAmountText, setDraft }) => {
   const freq = draft.incomeFrequency;
 
+  // Garantiza que al entrar en modo mensual con payday=null, se inicialice a 1.
+  // Así el usuario puede avanzar sin tocar el wheel.
+  useEffect(() => {
+    if (freq === 'monthly' && draft.incomePayday === null) {
+      setDraft({ incomePayday: 1 });
+    }
+  }, [freq]);
+
   const amountLabel =
     freq === 'weekly' ? 'Tu salario semanal' :
     freq === 'monthly' ? 'Tu salario neto mensual' : '';
@@ -616,17 +624,12 @@ const FrequencyStep: React.FC<FrequencyStepProps> = ({ palette, draft, amountTex
           />
           <View style={{ gap: spacing.sm }}>
             <Text variant="label" tone="secondary">Día del mes que cobras</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.xs, paddingVertical: 4 }}>
-              {MONTH_DAYS.map((d) => (
-                <DayChip
-                  key={d.value}
-                  label={d.label}
-                  selected={draft.incomePayday === d.value}
-                  onPress={() => setDraft({ incomePayday: d.value })}
-                  palette={palette}
-                />
-              ))}
-            </ScrollView>
+            <WheelPicker
+              items={MONTH_DAYS}
+              value={draft.incomePayday ?? 1}
+              onChange={(v) => setDraft({ incomePayday: v })}
+              palette={palette}
+            />
           </View>
         </View>
       )}
@@ -955,6 +958,140 @@ const MoneyInput: React.FC<{
   </View>
 );
 
+// ---- Wheel Picker ----
+
+const WHEEL_ITEM_HEIGHT = 44;
+const WHEEL_VISIBLE_HEIGHT = 198; // 44 * 4.5 — se ven el central + 2 arriba + 2 abajo
+const WHEEL_PADDING = (WHEEL_VISIBLE_HEIGHT - WHEEL_ITEM_HEIGHT) / 2;
+
+type WheelPickerItem = { label: string; value: number };
+
+type WheelPickerProps = {
+  items: WheelPickerItem[];
+  value: number;
+  onChange: (v: number) => void;
+  palette: Palette;
+};
+
+/**
+ * Wheel picker vertical tipo iOS.
+ * Implementación pura con ScrollView + snapToInterval.
+ * Compatible web (react-native-web soporta ScrollView con rueda del ratón).
+ */
+const WheelPicker: React.FC<WheelPickerProps> = ({ items, value, onChange, palette }) => {
+  const scrollRef = useRef<ScrollView>(null);
+  const [currentIndex, setCurrentIndex] = useState<number>(() => {
+    const idx = items.findIndex((it) => it.value === value);
+    return idx >= 0 ? idx : 0;
+  });
+
+  // Sincronizar posición del scroll cuando el valor cambia externamente (ej. primer render).
+  useEffect(() => {
+    const idx = items.findIndex((it) => it.value === value);
+    const target = idx >= 0 ? idx : 0;
+    setCurrentIndex(target);
+    // Usamos requestAnimationFrame para asegurar que el ScrollView está montado.
+    const handle = setTimeout(() => {
+      scrollRef.current?.scrollTo({ y: target * WHEEL_ITEM_HEIGHT, animated: false });
+    }, 0);
+    return () => clearTimeout(handle);
+  }, [value, items]);
+
+  const handleMomentumScrollEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const offsetY = e.nativeEvent.contentOffset.y;
+      const idx = Math.round(offsetY / WHEEL_ITEM_HEIGHT);
+      const clamped = Math.max(0, Math.min(idx, items.length - 1));
+      setCurrentIndex(clamped);
+      onChange(items[clamped].value);
+    },
+    [items, onChange],
+  );
+
+  // En web, onMomentumScrollEnd no siempre dispara; usamos onScrollEndDrag también.
+  const handleScrollEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (Platform.OS !== 'web') return;
+      const offsetY = e.nativeEvent.contentOffset.y;
+      const idx = Math.round(offsetY / WHEEL_ITEM_HEIGHT);
+      const clamped = Math.max(0, Math.min(idx, items.length - 1));
+      setCurrentIndex(clamped);
+      onChange(items[clamped].value);
+    },
+    [items, onChange],
+  );
+
+  return (
+    <View style={[styles.wheelContainer, { borderColor: palette.borderSubtle }]}>
+      {/* Líneas indicadoras del carril central */}
+      <View
+        pointerEvents="none"
+        style={[
+          styles.wheelRailTop,
+          { top: WHEEL_PADDING, borderColor: palette.borderSubtle },
+        ]}
+      />
+      <View
+        pointerEvents="none"
+        style={[
+          styles.wheelRailBottom,
+          { top: WHEEL_PADDING + WHEEL_ITEM_HEIGHT, borderColor: palette.borderSubtle },
+        ]}
+      />
+
+      {/* Degradado superior */}
+      <LinearGradient
+        pointerEvents="none"
+        colors={[palette.bgBase, 'transparent'] as [string, string]}
+        style={[styles.wheelFadeTop]}
+      />
+
+      <ScrollView
+        ref={scrollRef}
+        accessibilityLabel="Día de cobro"
+        showsVerticalScrollIndicator={false}
+        snapToInterval={WHEEL_ITEM_HEIGHT}
+        decelerationRate="fast"
+        onMomentumScrollEnd={handleMomentumScrollEnd}
+        onScrollEndDrag={handleScrollEnd}
+        contentContainerStyle={{
+          paddingTop: WHEEL_PADDING,
+          paddingBottom: WHEEL_PADDING,
+        }}
+        style={{ height: WHEEL_VISIBLE_HEIGHT }}
+      >
+        {items.map((item, idx) => {
+          const isSelected = idx === currentIndex;
+          return (
+            <View
+              key={item.value}
+              style={[styles.wheelItem, { height: WHEEL_ITEM_HEIGHT }]}
+            >
+              <Text
+                variant={isSelected ? 'h2' : 'body'}
+                weight={isSelected ? 'bold' : 'regular'}
+                style={{
+                  color: isSelected ? palette.accent : palette.textSecondary,
+                  opacity: isSelected ? 1 : 0.45,
+                }}
+              >
+                {item.label}
+              </Text>
+            </View>
+          );
+        })}
+      </ScrollView>
+
+      {/* Degradado inferior */}
+      <LinearGradient
+        pointerEvents="none"
+        colors={['transparent', palette.bgBase] as [string, string]}
+        style={[styles.wheelFadeBottom]}
+      />
+    </View>
+  );
+};
+
 /** Chip de día (mes o semana) para el selector inline. */
 const DayChip: React.FC<{
   label: string;
@@ -1040,6 +1177,51 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: radius.sm,
     borderWidth: 1,
+  },
+  // Wheel Picker
+  wheelContainer: {
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  wheelItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wheelRailTop: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 1,
+    borderTopWidth: 1,
+    zIndex: 2,
+  },
+  wheelRailBottom: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 1,
+    borderTopWidth: 1,
+    zIndex: 2,
+  },
+  wheelFadeTop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: WHEEL_PADDING,
+    zIndex: 3,
+    pointerEvents: 'none',
+  },
+  wheelFadeBottom: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: WHEEL_PADDING,
+    zIndex: 3,
+    pointerEvents: 'none',
   },
   personalizedBox: {
     padding: spacing.lg,

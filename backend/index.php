@@ -528,6 +528,219 @@ function addMonthSafely(DateTimeImmutable $from, DateTimeImmutable $anchor): Dat
     return new DateTimeImmutable(sprintf('%04d-%02d-%02d', $year, $month, $day));
 }
 
+// =====================================================
+// MODELO DUAL · Helpers de periodo financiero (Fase 2)
+// =====================================================
+
+/**
+ * Devuelve la fecha de inicio del periodo financiero actual del usuario
+ * en formato 'YYYY-MM-DD'.
+ *
+ * Si el usuario tiene income_payday (1-31): el periodo va desde ese día del
+ * mes pasado hasta el día payday-1 del mes actual (normalizando con LAST_DAY
+ * cuando el mes no tiene ese día). Ejemplo: payday=25, hoy=2026-05-10 →
+ * periodo_start = 2026-04-25.
+ *
+ * Si income_payday es NULL: el periodo empieza el día 1 del mes actual.
+ *
+ * El resultado se cachea en $_periodStartCache para evitar queries repetidas
+ * dentro de la misma request.
+ */
+$_periodStartCache = [];
+$_paydayCache = [];
+
+/**
+ * Devuelve el income_payday del usuario, cacheado en memoria por request.
+ * Lo usan currentPeriodStart() y closeFinancialPeriods() para evitar
+ * consultas duplicadas a `users` dentro de la misma request (cuota Hostinger).
+ */
+function getUserPayday(PDO $conn, int $userId): ?int {
+    global $_paydayCache;
+    if (array_key_exists($userId, $_paydayCache)) {
+        return $_paydayCache[$userId];
+    }
+    $stmt = $conn->prepare("SELECT income_payday FROM users WHERE id = :u LIMIT 1");
+    $stmt->execute([':u' => $userId]);
+    $row    = $stmt->fetch(PDO::FETCH_ASSOC);
+    $payday = $row && isset($row['income_payday']) && $row['income_payday'] !== null
+              ? (int)$row['income_payday']
+              : null;
+    $_paydayCache[$userId] = $payday;
+    return $payday;
+}
+
+function currentPeriodStart(PDO $conn, int $userId): string {
+    global $_periodStartCache;
+    if (isset($_periodStartCache[$userId])) {
+        return $_periodStartCache[$userId];
+    }
+
+    $payday = getUserPayday($conn, $userId);
+
+    $today = new DateTimeImmutable('today');
+
+    if ($payday === null || $payday < 1 || $payday > 31) {
+        // Sin payday configurado → periodo = mes natural, empieza el día 1.
+        $result = $today->format('Y-m') . '-01';
+    } else {
+        // Calcular el inicio del periodo: payday del mes pasado (o del actual
+        // si hoy es anterior al payday).
+        $year  = (int)$today->format('Y');
+        $month = (int)$today->format('n');
+        $day   = (int)$today->format('j');
+
+        // Calcular el payday normalizado del mes actual (por si el mes es corto).
+        $lastDayThisMonth = (int)(new DateTimeImmutable("$year-$month-01"))->format('t');
+        $paydayThisMonth  = min($payday, $lastDayThisMonth);
+
+        if ($day >= $paydayThisMonth) {
+            // El cobro de este mes ya pasó (o es hoy): el periodo empezó este mes.
+            $result = sprintf('%04d-%02d-%02d', $year, $month, $paydayThisMonth);
+        } else {
+            // El cobro de este mes aún no ha llegado: el periodo empezó el mes pasado.
+            $prevMonth = $month - 1;
+            $prevYear  = $year;
+            if ($prevMonth < 1) { $prevMonth = 12; $prevYear--; }
+            $lastDayPrevMonth = (int)(new DateTimeImmutable("$prevYear-$prevMonth-01"))->format('t');
+            $paydayPrevMonth  = min($payday, $lastDayPrevMonth);
+            $result = sprintf('%04d-%02d-%02d', $prevYear, $prevMonth, $paydayPrevMonth);
+        }
+    }
+
+    $_periodStartCache[$userId] = $result;
+    return $result;
+}
+
+/**
+ * Calcula el inicio del siguiente periodo desde un $periodStart dado,
+ * respetando el payday del usuario.
+ * Uso interno de closeFinancialPeriods().
+ */
+function nextPeriodStart(string $periodStart, ?int $payday): string {
+    $dt    = new DateTimeImmutable($periodStart);
+    $year  = (int)$dt->format('Y');
+    $month = (int)$dt->format('n');
+
+    $nextMonth = $month + 1;
+    $nextYear  = $year;
+    if ($nextMonth > 12) { $nextMonth = 1; $nextYear++; }
+
+    if ($payday === null || $payday < 1 || $payday > 31) {
+        // Mes natural: siguiente periodo = día 1 del mes siguiente.
+        return sprintf('%04d-%02d-01', $nextYear, $nextMonth);
+    }
+
+    $lastDayNext = (int)(new DateTimeImmutable("$nextYear-$nextMonth-01"))->format('t');
+    $paydayNext  = min($payday, $lastDayNext);
+    return sprintf('%04d-%02d-%02d', $nextYear, $nextMonth, $paydayNext);
+}
+
+/**
+ * Cierra los periodos financieros del usuario que ya hayan terminado y aún
+ * no tengan entrada en monthly_closures.
+ *
+ * Patrón lazy idempotente: análogo a expandRecurringTransactions().
+ * - Máximo 24 cierres por request (cap duro; protege cuota Hostinger).
+ * - INSERT IGNORE garantiza idempotencia por el UNIQUE (user_id, period_start).
+ * - Si el usuario no tiene transacciones, devuelve sin hacer nada.
+ * - Los errores quedan en error_log; NO deben tumbar la request normal.
+ */
+function closeFinancialPeriods(PDO $conn, int $userId): void {
+    // Reutiliza la cache compartida con currentPeriodStart() para no
+    // duplicar la consulta a `users.income_payday` (cuota Hostinger).
+    $payday = getUserPayday($conn, $userId);
+
+    // Transacción más antigua: determina el primer periodo a cerrar.
+    $stmt = $conn->prepare("SELECT MIN(transaction_date) AS oldest FROM transactions WHERE user_id = :u");
+    $stmt->execute([':u' => $userId]);
+    $oldestRow = $stmt->fetch(PDO::FETCH_ASSOC);
+    $oldest = $oldestRow['oldest'] ?? null;
+    if ($oldest === null) return; // Sin transacciones → nada que cerrar.
+
+    // Inicio del periodo actual (no cerrar el mes en curso).
+    $currentStart = currentPeriodStart($conn, $userId);
+
+    // Último cierre ya registrado para este usuario.
+    $stmt = $conn->prepare("SELECT MAX(period_start) AS last_start FROM monthly_closures WHERE user_id = :u");
+    $stmt->execute([':u' => $userId]);
+    $lastRow   = $stmt->fetch(PDO::FETCH_ASSOC);
+    $lastStart = $lastRow['last_start'] ?? null;
+
+    // Determinar desde qué periodo hay que empezar.
+    if ($lastStart !== null) {
+        // El siguiente periodo a cerrar es el consecutivo al último cerrado.
+        $nextStart = nextPeriodStart($lastStart, $payday);
+    } else {
+        // Nunca se han hecho cierres: empezamos desde el periodo de la tx más antigua.
+        // Calcular el periodo_start que corresponde a $oldest según el payday.
+        $oldestDt  = new DateTimeImmutable($oldest);
+        $oYear     = (int)$oldestDt->format('Y');
+        $oMonth    = (int)$oldestDt->format('n');
+        $oDay      = (int)$oldestDt->format('j');
+
+        if ($payday === null || $payday < 1 || $payday > 31) {
+            $nextStart = sprintf('%04d-%02d-01', $oYear, $oMonth);
+        } else {
+            $lastDayO   = (int)(new DateTimeImmutable("$oYear-$oMonth-01"))->format('t');
+            $paydayO    = min($payday, $lastDayO);
+            if ($oDay >= $paydayO) {
+                // La tx cayó dentro del periodo que empieza en paydayO de ese mes.
+                $nextStart = sprintf('%04d-%02d-%02d', $oYear, $oMonth, $paydayO);
+            } else {
+                // La tx cayó antes del payday de ese mes → periodo del mes anterior.
+                $pm = $oMonth - 1; $py = $oYear;
+                if ($pm < 1) { $pm = 12; $py--; }
+                $lastDayPM  = (int)(new DateTimeImmutable("$py-$pm-01"))->format('t');
+                $paydayPM   = min($payday, $lastDayPM);
+                $nextStart  = sprintf('%04d-%02d-%02d', $py, $pm, $paydayPM);
+            }
+        }
+    }
+
+    // Preparar statements reutilizables.
+    $surplusStmt = $conn->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN type='income'  AND scope='month' THEN amount ELSE 0 END), 0)
+          - COALESCE(SUM(CASE WHEN type='expense' AND scope='month' THEN amount ELSE 0 END), 0) AS surplus
+        FROM transactions
+        WHERE user_id = :u
+          AND transaction_date >= :ps
+          AND transaction_date <= :pe
+    ");
+    $insertStmt = $conn->prepare("
+        INSERT IGNORE INTO monthly_closures (user_id, period_start, period_end, surplus)
+        VALUES (:u, :ps, :pe, :s)
+    ");
+
+    $iterations = 0;
+    $maxIter    = 24; // cap duro
+
+    while ($iterations < $maxIter) {
+        // No cerrar el periodo actual ni futuros.
+        if ($nextStart >= $currentStart) break;
+
+        // period_end = día anterior al inicio del siguiente periodo.
+        $periodEndDt = (new DateTimeImmutable(nextPeriodStart($nextStart, $payday)))->modify('-1 day');
+        $periodEnd   = $periodEndDt->format('Y-m-d');
+
+        // Calcular surplus del periodo.
+        $surplusStmt->execute([':u' => $userId, ':ps' => $nextStart, ':pe' => $periodEnd]);
+        $surplusRow = $surplusStmt->fetch(PDO::FETCH_ASSOC);
+        $surplus    = (float)($surplusRow['surplus'] ?? 0);
+
+        // Insertar cierre (INSERT IGNORE: si ya existe, no hace nada).
+        $insertStmt->execute([
+            ':u'  => $userId,
+            ':ps' => $nextStart,
+            ':pe' => $periodEnd,
+            ':s'  => round($surplus, 2),
+        ]);
+
+        $nextStart = nextPeriodStart($nextStart, $payday);
+        $iterations++;
+    }
+}
+
 // ================= MIDDLEWARE =================
 function requireAuth(PDO $conn): callable {
     return function (Request $request, RequestHandlerInterface $handler) use ($conn) {
@@ -540,6 +753,11 @@ function requireAuth(PDO $conn): callable {
         // transacciones recurrentes que toquen. Es idempotente gracias al
         // INDEX UNIQUE (user_id, recurring_id, transaction_date).
         try { expandRecurringTransactions($conn, (int)$user['user_id']); } catch (Throwable $e) { /* silencioso */ }
+        // Cierre lazy de periodos: registra en monthly_closures todos los meses
+        // que ya han terminado. Cap de 24 por request; idempotente; silencioso.
+        try { closeFinancialPeriods($conn, (int)$user['user_id']); } catch (Throwable $e) {
+            error_log('[closeFinancialPeriods] ' . $e->getMessage());
+        }
         return $handler->handle($request->withAttribute('user', $user));
     };
 }
@@ -1948,11 +2166,21 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $balance      = $totalIncome - $totalExpense;
         $savingsRatio = $totalIncome > 0 ? round(($balance / $totalIncome) * 100, 2) : 0;
 
+        // net_total_historical (modelo dual):
+        // = SUM(surplus de cierres pasados) + transacciones scope='historical'
+        // NO incluye el periodo actual (aún en curso; se cerraría al mes siguiente).
+        // closeFinancialPeriods ya se ejecutó en requireAuth, así que
+        // monthly_closures tiene los datos más recientes posibles.
+        $periodStart = currentPeriodStart($conn, $uid);
+
         $hist = $conn->prepare("
             SELECT
-                SUM(CASE WHEN type='income'  THEN amount ELSE 0 END)
-              - SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) AS net_total
-            FROM transactions WHERE user_id = :u
+                COALESCE((SELECT SUM(mc.surplus) FROM monthly_closures mc WHERE mc.user_id = :u), 0)
+              + COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
+                AS net_total
+            FROM transactions t
+            WHERE t.user_id = :u
         ");
         $hist->execute([':u'=>$uid]);
         $netTotal = (float)($hist->fetch(PDO::FETCH_ASSOC)['net_total'] ?? 0);
@@ -2013,6 +2241,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 'total_expense' => round((float)$prevRow['total_expense'], 2),
             ],
             'saved_this_month'     => round($savedThisMonth, 2),
+            // Campo nuevo (Fase 2): inicio del periodo financiero actual.
+            // El frontend de Fase 1 lo ignora; Fase 3 lo usará para filtrar.
+            'current_period_start' => $periodStart,
         ];
 
         // ---- monthly ----
