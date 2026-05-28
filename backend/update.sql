@@ -219,4 +219,63 @@ SET @sql = IF(@col_exists = 0,
 );
 PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
+-- =====================================================
+-- 10) Recibos de transacciones + flag receipt_photos en planes
+-- (Fase 1 — ReceiptsAndSavingsStats)
+--
+-- 10a) Columna receipt_path en transactions:
+--      Ruta relativa al archivo de recibo, p.ej. "Images/42/abc123.jpg".
+--      NULL = sin recibo. Solo se escribe/borra mediante el endpoint PHP
+--      (nunca por el cliente directamente). VARCHAR(255) es suficiente para
+--      "Images/{user_id}/{32hex}.jpg".
+--
+-- 10b) Flag receipt_photos en planes plus y lifetime:
+--      Añade "receipt_photos":true al features_json de plus y lifetime.
+--      Se usa JSON_SET para no sobreescribir otras features existentes.
+--      El plan 'free' mantiene receipt_photos ausente/false.
+--      Family y pro_freelance no son vendibles en esta fase → se ignoran.
+--      Todos los UPDATE usan JSON_EXTRACT para ser idempotentes:
+--      no modifican si el flag ya está en el valor correcto.
+-- =====================================================
+
+-- 10a) receipt_path en transactions ------------------
+SET @col_rp = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'transactions'
+      AND COLUMN_NAME  = 'receipt_path'
+);
+SET @sql_rp = IF(@col_rp = 0,
+    "ALTER TABLE `transactions` ADD COLUMN `receipt_path` VARCHAR(255) NULL DEFAULT NULL",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql_rp; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+-- 10b) receipt_photos: true en plan 'plus' -----------
+UPDATE `plans`
+  SET `features_json` = JSON_SET(`features_json`, '$.receipt_photos', CAST('true' AS JSON))
+  WHERE `code` = 'plus'
+    AND (JSON_EXTRACT(`features_json`, '$.receipt_photos') IS NULL
+         OR JSON_EXTRACT(`features_json`, '$.receipt_photos') != CAST('true' AS JSON));
+
+-- 10b) receipt_photos: true en plan 'lifetime' -------
+-- (El plan lifetime no existe como código independiente en la tabla;
+--  las compras lifetime usan el plan_code 'plus' con source='lifetime'.
+--  Si en el futuro se añade un código 'lifetime' separado, el UPDATE
+--  siguiente lo cubrirá sin romper nada porque el WHERE no matchará si
+--  el código no existe todavía.)
+UPDATE `plans`
+  SET `features_json` = JSON_SET(`features_json`, '$.receipt_photos', CAST('true' AS JSON))
+  WHERE `code` = 'lifetime'
+    AND (JSON_EXTRACT(`features_json`, '$.receipt_photos') IS NULL
+         OR JSON_EXTRACT(`features_json`, '$.receipt_photos') != CAST('true' AS JSON));
+
+-- 10b) receipt_photos: false en plan 'free' ----------
+-- Idempotente: solo actualiza si aún no está puesto a false.
+UPDATE `plans`
+  SET `features_json` = JSON_SET(`features_json`, '$.receipt_photos', CAST('false' AS JSON))
+  WHERE `code` = 'free'
+    AND (JSON_EXTRACT(`features_json`, '$.receipt_photos') IS NULL
+         OR JSON_EXTRACT(`features_json`, '$.receipt_photos') != CAST('false' AS JSON));
+
 COMMIT;

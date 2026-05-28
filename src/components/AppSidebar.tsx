@@ -28,6 +28,7 @@ const PRIMARY: Item[] = [
 const SECONDARY: Item[] = [
   { label: 'Presupuestos', icon: 'wallet', route: 'Budgets' },
   { label: 'Inversiones', icon: 'trending-up', route: 'Investments' },
+  { label: 'Patrimonio neto', icon: 'diamond', route: 'NetWorth' },
   { label: 'Gastos fijos', icon: 'repeat', route: 'Recurring' },
   { label: 'Metas de ahorro', icon: 'flag', route: 'Goals' },
   { label: 'Categorías', icon: 'pricetags', route: 'Categories' },

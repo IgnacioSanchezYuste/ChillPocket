@@ -114,6 +114,13 @@ function daysRemainingInMonth(): number {
   return lastDay - now.getDate() + 1;
 }
 
+/** Equivalente mensual de un recurrente (semanal × 4.345, anual / 12). */
+function monthlyEquivalent(amount: number, frequency: 'weekly' | 'monthly' | 'yearly'): number {
+  if (frequency === 'weekly') return amount * 4.345;
+  if (frequency === 'yearly') return amount / 12;
+  return amount;
+}
+
 export const OnboardingHost: React.FC = () => {
   const { palette } = useTheme();
   const { setPreference } = useTheme();
@@ -140,6 +147,7 @@ export const OnboardingHost: React.FC = () => {
     skipAll,
     addDemoTransactionId,
     addDemoRecurringId,
+    demoRecurringIds,
   } = useOnboardingStore();
 
   // Al entrar en el paso del primer gasto, asegúrate de estar en Inicio (FAB).
@@ -238,6 +246,7 @@ export const OnboardingHost: React.FC = () => {
         draft={draft}
         transactions={transactions}
         recurring={recurring}
+        demoRecurringIds={demoRecurringIds}
         projection={projection}
         onFinish={() => { finish(); navigateToTab('Home'); }}
       />
@@ -361,8 +370,9 @@ export const OnboardingHost: React.FC = () => {
         }}
         forcedStartDate={draft.incomePayday !== null ? incomeStartDate : undefined}
         onClose={() => setOpenSheet(null)}
-        onSaved={(createdId) => {
-          if (typeof createdId === 'number') addDemoRecurringId(createdId);
+        onSaved={() => {
+          // El salario (Nómina) NO es demo: queremos que persista tras el tuto
+          // como ingreso recurrente real del usuario. No se captura para borrado.
           setOpenSheet(null);
           setPhase('tour');
         }}
@@ -764,6 +774,7 @@ type SuccessPhaseProps = {
   draft: OnboardingDraft;
   transactions: Transaction[];
   recurring: Recurring[];
+  demoRecurringIds: number[];
   projection: Projection | null;
   onFinish: () => void;
 };
@@ -772,6 +783,7 @@ const SuccessPhase: React.FC<SuccessPhaseProps> = ({
   draft,
   transactions,
   recurring,
+  demoRecurringIds,
   projection,
   onFinish,
 }) => {
@@ -779,16 +791,22 @@ const SuccessPhase: React.FC<SuccessPhaseProps> = ({
   const projNet = projection?.projected_monthly_net ?? 0;
 
   // Mensaje personalizado si hay datos suficientes y la frecuencia no es variable.
+  // Misma lógica que el InsightBanner del dashboard: reservamos los gastos fijos
+  // (excluyendo los recurrentes demo del tuto, que se borran al finalizar) además
+  // del objetivo de ahorro, para que el número cuadre con lo que verá luego.
   const personalizedMsg = useMemo((): string | null => {
     if (draft.incomeFrequency === 'variable') return null;
     if (!draft.incomeAmount || draft.savingsGoalMonthly === null) return null;
-    const spendable = draft.incomeAmount - draft.savingsGoalMonthly;
+    const realFixedMonthly = recurring
+      .filter((r) => r.type === 'expense' && r.is_active === 1 && !demoRecurringIds.includes(r.id))
+      .reduce((sum, r) => sum + monthlyEquivalent(r.amount, r.frequency), 0);
+    const spendable = draft.incomeAmount - draft.savingsGoalMonthly - realFixedMonthly;
     if (spendable <= 0) return null;
     const daysLeft = daysRemainingInMonth();
     const dailyBudget = spendable / daysLeft;
     const name = draft.name.trim() || 'tú';
     return `Hola ${name}, hoy puedes gastar ${formatMoney(dailyBudget, draft.currency)} y seguir ahorrando ${formatMoney(draft.savingsGoalMonthly, draft.currency)} este mes 🎯`;
-  }, [draft]);
+  }, [draft, recurring, demoRecurringIds]);
 
   return (
     <FullScreen>

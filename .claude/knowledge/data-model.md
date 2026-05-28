@@ -25,11 +25,12 @@
 
 ### `transactions`
 `id, user_id, amount, description, type, transaction_date, notes, payment_method, recurring_id, goal_id,
- category_id, scope, created_at, updated_at`
+ category_id, scope, receipt_path, created_at, updated_at`
 - `payment_method`: `cash | debit_card | credit_card | bizum | transfer | other` (nullable).
 - `recurring_id` → FK `recurring_expenses(id)` **ON DELETE SET NULL**. Marca transacciones generadas por un recurrente.
 - `goal_id` → FK `savings_goals(id)` **ON DELETE SET NULL**. Marca contribuciones a metas (modelo sobre).
 - `scope` `ENUM('month','historical') NOT NULL DEFAULT 'month'` (Fase 2 de DualBalance): clasifica la transacción en el modelo dual.
+- `receipt_path` `VARCHAR(255) NULL`: ruta relativa al archivo de recibo, p.ej. `Images/42/abc123.jpg`. Solo se escribe/borra por los endpoints `/transactions/{id}/receipt`. Requiere plan Plus (`receipt_photos` feature). El archivo físico vive en `backend/Images/{user_id}/`. Nunca es accesible por URL directa (bloqueado por `Images/.htaccess`).
   - `'month'` → cuenta para "Saldo del mes" (el periodo financiero en curso) y, una vez cerrado, contribuye al `surplus` que se acumula en `monthly_closures`.
   - `'historical'` → no cuenta para el mes; va directo a "Mis ahorros". Lo elige el usuario en `TransactionSheet` (Fase 4).
 - **UNIQUE `(user_id, recurring_id, transaction_date)`** (`uniq_user_recurring_date`): hace **idempotente** la

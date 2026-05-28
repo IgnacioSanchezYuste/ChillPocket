@@ -1,0 +1,52 @@
+# =====================================================
+# backend/Images/.htaccess
+# Objetivo: los archivos de recibo son PRIVADOS.
+# Solo deben salir a través del endpoint PHP autenticado
+# (GET /transactions/{id}/receipt). Cualquier acceso
+# directo por URL a esta carpeta queda bloqueado.
+#
+# Cubrir:
+#   - Apache 2.2 (Deny from all)
+#   - Apache 2.4 (Require all denied)
+#   - Sin listado de directorio
+#   - Sin ejecución de PHP en caso de bypass
+# =====================================================
+
+# Sin listado de contenidos del directorio.
+Options -Indexes
+
+# Bloquear acceso directo total (Apache 2.4).
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+
+# Bloquear acceso directo total (Apache 2.2 / módulo mod_access_compat).
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>
+
+# Deshabilitar ejecución de PHP por si se combinan con un bypass del deny.
+# php_flag requiere mod_php; si el servidor usa FastCGI/PHP-FPM puede que
+# no aplique, pero la regla de Deny arriba ya bloquea el acceso.
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>
+
+# Bloquear explícitamente archivos PHP y variantes (por si se sube algo
+# disfrazado y el deny falla por configuración del hosting).
+<FilesMatch "\.(php|phtml|phar|php3|php4|php5|php6|php7|php8|pht)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</FilesMatch>

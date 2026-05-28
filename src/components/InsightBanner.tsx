@@ -7,7 +7,8 @@ import { Text } from './Text';
 import { formatMoney } from '../utils/format';
 import { usePreferencesStore } from '../store/usePreferencesStore';
 import { useBilling } from '../store/useBillingStore';
-import type { AnalyticsSummary, DailyPoint } from '../api/types';
+import { useDataStore } from '../store/useDataStore';
+import type { AnalyticsSummary, DailyPoint, Recurring } from '../api/types';
 
 type Props = {
   summary: AnalyticsSummary | null;
@@ -66,6 +67,69 @@ function daysBetween(from: Date, to: Date): number {
   return Math.round((b - a) / dayMs);
 }
 
+/**
+ * k-ésima fecha de cobro de un recurrente, preservando el día ancla del
+ * `start_date` cuando el mes destino es más corto (espejo de `addMonthSafely`
+ * y `nextRecurringDate` del backend). k=0 es el propio start_date.
+ */
+function nthRecurringDate(start: Date, frequency: Recurring['frequency'], k: number): Date {
+  if (frequency === 'weekly') {
+    const d = new Date(start);
+    d.setDate(d.getDate() + 7 * k);
+    return d;
+  }
+  if (frequency === 'yearly') {
+    const year = start.getFullYear() + k;
+    const lastDay = new Date(year, start.getMonth() + 1, 0).getDate();
+    return new Date(year, start.getMonth(), Math.min(start.getDate(), lastDay));
+  }
+  // monthly (default)
+  const totalMonth = start.getMonth() + k;
+  const year = start.getFullYear() + Math.floor(totalMonth / 12);
+  const month = ((totalMonth % 12) + 12) % 12;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return new Date(year, month, Math.min(start.getDate(), lastDay));
+}
+
+/** Índice de cobro próximo a `from` para no iterar desde el origen del recurrente. */
+function recurringStartIndex(start: Date, frequency: Recurring['frequency'], from: Date): number {
+  if (frequency === 'weekly') {
+    const weeks = Math.floor((from.getTime() - start.getTime()) / (7 * 86400000));
+    return Math.max(0, weeks - 1);
+  }
+  if (frequency === 'yearly') {
+    return Math.max(0, from.getFullYear() - start.getFullYear() - 1);
+  }
+  const months = (from.getFullYear() - start.getFullYear()) * 12 + (from.getMonth() - start.getMonth());
+  return Math.max(0, months - 1);
+}
+
+/**
+ * Suma de los cargos de gastos fijos (recurrentes tipo expense) que se cobrarán
+ * en la ventana (from, to): aún NO materializados como transacción (el backend
+ * solo expande hasta hoy) y por tanto no descontados del saldo. Reservarlos
+ * mantiene el presupuesto diario estable cuando llega el cargo.
+ */
+function pendingRecurringExpense(recurring: Recurring[], from: Date, to: Date): number {
+  let total = 0;
+  for (const r of recurring) {
+    if (!r.is_active || r.type !== 'expense') continue;
+    const start = new Date(`${r.start_date}T00:00:00`);
+    if (Number.isNaN(start.getTime())) continue;
+    const end = r.end_date ? new Date(`${r.end_date}T00:00:00`) : null;
+    const amount = Number(r.amount) || 0;
+    if (amount <= 0) continue;
+    let k = recurringStartIndex(start, r.frequency, from);
+    for (let i = 0; i < 120; i++, k++) {
+      const occ = nthRecurringDate(start, r.frequency, k);
+      if (occ >= to) break;            // futuras fuera de la ventana
+      if (end && occ > end) break;     // recurrente ya terminado
+      if (occ > from) total += amount; // pendiente dentro de la ventana
+    }
+  }
+  return total;
+}
+
 function noSpendStreak(daily: DailyPoint[]): number {
   if (!daily.length) return 0;
   const now = new Date();
@@ -99,9 +163,11 @@ function buildInsight(
   currency: string,
   prefs: PrefsSlice,
   billing: BillingSlice,
+  recurring: Recurring[],
 ): { icon: keyof typeof Ionicons.glyphMap; text: string; tone: Tone } | null {
   const income = Number(summary.total_income) || 0;
   const expense = Number(summary.total_expense) || 0;
+  const balance = Number(summary.balance) || 0;
   const prevExpense = Number(summary.previous?.total_expense) || 0;
   const saved = Number(summary.saved_this_month) || 0;
   const recExpense = Number(summary.recurring_monthly?.expense) || 0;
@@ -118,13 +184,16 @@ function buildInsight(
   //    cuándo termina el periodo en curso.
   if (hasIncomePlan && periodStart) {
     const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
-    const endOfPeriod = new Date(endNext);
-    endOfPeriod.setDate(endOfPeriod.getDate() - 1);
     const today = new Date();
     const daysLeft = Math.max(1, daysBetween(today, endNext)); // hasta inicio del siguiente
     const goal = Number(prefs.savingsGoalMonthly) || 0;
-    const inc = Number(prefs.incomeAmount) || 0;
-    const dailyBudget = (inc - goal - expense) / daysLeft;
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const pendingFixed = pendingRecurringExpense(recurring, todayDate, endNext);
+    // Sobre el dinero REALMENTE disponible este mes (saldo del mes = ingresos
+    // recibidos − gastos), no el salario teórico, y reservando los gastos fijos
+    // aún no cobrados de este periodo: así nunca recomienda gastar dinero ya
+    // comprometido y el presupuesto no salta cuando llega el recibo del alquiler.
+    const dailyBudget = (balance - goal - pendingFixed) / daysLeft;
     if (Number.isFinite(dailyBudget) && dailyBudget > 0) {
       return {
         icon: 'wallet-outline',
@@ -132,12 +201,24 @@ function buildInsight(
         text: `Hoy puedes gastar ${formatMoney(dailyBudget, currency)} y seguir cumpliendo tu objetivo`,
       };
     }
-    if (Number.isFinite(dailyBudget) && dailyBudget <= 0 && goal > 0) {
-      return {
-        icon: 'alert-circle',
-        tone: 'danger',
-        text: `Para llegar a tu objetivo de ${formatMoney(goal, currency)} no deberías gastar más este periodo`,
-      };
+    if (Number.isFinite(dailyBudget) && dailyBudget <= 0) {
+      // Distinguir la causa: ¿no llega ni para los gastos fijos pendientes
+      // (vas justo de caja, normalmente porque aún no has cobrado) o sí, pero
+      // no para ahorrar además el objetivo completo?
+      if (pendingFixed > 0 && balance - pendingFixed < 0) {
+        return {
+          icon: 'alert-circle',
+          tone: 'danger',
+          text: `Tus gastos fijos pendientes (${formatMoney(pendingFixed, currency)}) no caben en tu saldo; ojo hasta tu próximo cobro`,
+        };
+      }
+      if (goal > 0) {
+        return {
+          icon: 'alert-circle',
+          tone: 'danger',
+          text: `Para llegar a tu objetivo de ${formatMoney(goal, currency)} no deberías gastar más este periodo`,
+        };
+      }
     }
   }
 
@@ -171,7 +252,6 @@ function buildInsight(
   // 3) % completado del objetivo de ahorro este mes.
   if (hasIncomePlan && prefs.savingsGoalMonthly && prefs.savingsGoalMonthly > 0) {
     const goal = Number(prefs.savingsGoalMonthly);
-    const balance = Number(summary.balance) || 0;
     if (balance > 0) {
       const pct = Math.min(100, Math.round((balance / goal) * 100));
       return {
@@ -229,7 +309,6 @@ function buildInsight(
   }
 
   // 9) Estado del balance del mes (fallback).
-  const balance = Number(summary.balance) || 0;
   if (income > 0 || expense > 0) {
     return balance >= 0
       ? { icon: 'sparkles', tone: 'success', text: `Vas en positivo este mes (+${formatMoney(balance, currency)})` }
@@ -243,6 +322,7 @@ export const InsightBanner: React.FC<Props> = ({ summary, daily, currency }) => 
   const incomeAmount = usePreferencesStore((s) => s.incomeAmount);
   const incomePayday = usePreferencesStore((s) => s.incomePayday);
   const savingsGoalMonthly = usePreferencesStore((s) => s.savingsGoalMonthly);
+  const recurring = useDataStore((s) => s.recurring);
   const billing = useBilling();
   const hasAdvanced = billing.hasFeature('advanced_analytics');
 
@@ -255,9 +335,10 @@ export const InsightBanner: React.FC<Props> = ({ summary, daily, currency }) => 
             currency,
             { incomeAmount, incomePayday, savingsGoalMonthly },
             { hasAdvanced },
+            recurring,
           )
         : null,
-    [summary, daily, currency, incomeAmount, incomePayday, savingsGoalMonthly, hasAdvanced],
+    [summary, daily, currency, incomeAmount, incomePayday, savingsGoalMonthly, hasAdvanced, recurring],
   );
   if (!insight) return null;
 

@@ -220,15 +220,30 @@ export const useOnboardingStore = create<State>((set, get) => ({
 
   deleteDemoData: async () => {
     const { demoTransactionIds, demoRecurringIds, clearDemoIds } = get();
-    // Borrar transacciones demo una a una; ignorar 404 (ya borrada por el usuario).
-    for (const id of demoTransactionIds) {
+
+    // Al crear un recurrente, el backend materializa una transacción (fecha de
+    // hoy) ligada por recurring_id. El FK es ON DELETE SET NULL, así que borrar
+    // el recurrente NO la elimina (quedaría como gasto suelto, p.ej. el Netflix
+    // del tuto). Identificamos esas transacciones generadas ANTES de borrar
+    // nada: tras borrar el recurrente, su recurring_id pasa a NULL y ya no se
+    // podrían casar.
+    let generatedTxIds: number[] = [];
+    if (demoRecurringIds.length > 0) {
       try {
-        await transactionsApi.remove(id);
+        await useDataStore.getState().fetchTransactions(undefined, true);
       } catch {
-        // 404 u otro error: ignorar para no interrumpir el flujo
+        /* sin red: se reintenta en el próximo arranque */
       }
+      generatedTxIds = useDataStore
+        .getState()
+        .transactions.filter((t) => t.recurring_id != null && demoRecurringIds.includes(t.recurring_id))
+        .map((t) => t.id);
     }
-    // Borrar recurrentes demo.
+
+    // Borrar los recurrentes demo PRIMERO. Si borráramos sus transacciones
+    // antes, el middleware del backend (expandRecurringTransactions corre en
+    // CADA request autenticada) las regeneraría al ver el recurrente sin
+    // transacciones. Con el recurrente ya borrado, no se regenera nada.
     for (const id of demoRecurringIds) {
       try {
         await recurringApi.remove(id);
@@ -236,6 +251,18 @@ export const useOnboardingStore = create<State>((set, get) => ({
         // 404 u otro error: ignorar
       }
     }
+
+    // Borrar transacciones: las generadas por los recurrentes (ya huérfanas) +
+    // las demo sueltas (la del paso createExpense). Set para no repetir borrados.
+    const txToDelete = Array.from(new Set([...generatedTxIds, ...demoTransactionIds]));
+    for (const id of txToDelete) {
+      try {
+        await transactionsApi.remove(id);
+      } catch {
+        // 404 u otro error: ignorar para no interrumpir el flujo
+      }
+    }
+
     // Una sola llamada a refreshAll tras borrar todo.
     if (demoTransactionIds.length > 0 || demoRecurringIds.length > 0) {
       try {

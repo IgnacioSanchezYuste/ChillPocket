@@ -32,7 +32,14 @@
 | GET | `/transactions` | `?from,to,type,category_id,payment_method,search,limit,offset` → `{transactions}` |
 | POST | `/transactions` | `{amount,description,type,transaction_date,category_id?,payment_method?,notes?}` → `{success,transaction}` |
 | PUT | `/transactions/{id}` | `Partial<Transaction>` |
-| DELETE | `/transactions/{id}` | — |
+| DELETE | `/transactions/{id}` | — Lee `receipt_path` y hace `unlink` del archivo si existía antes de borrar la fila. |
+
+## Recibos de transacciones (protegidas — **Plus only**)
+| Método | Ruta | Notas |
+|---|---|---|
+| `POST` | `/transactions/{id}/receipt` | Multipart campo `receipt`. Gate Plus server-side (`receipt_photos` feature). Valida: propiedad, magia de bytes (JPEG/PNG/WebP), ≤5MB, ≤4000×4000px. Re-encoda con GD (strip EXIF). Nombre aleatorio server-side. Reemplaza el anterior si existía. → `{success, receipt_url}` o 403/404/413/415/400/500. |
+| `DELETE` | `/transactions/{id}/receipt` | Propiedad → `unlink` + `receipt_path=NULL`. → `{success}`. |
+| `GET` | `/transactions/{id}/receipt` | Propiedad → stream JPEG con `Content-Type`, `X-Content-Type-Options: nosniff`, `Content-Disposition: inline`, `Cache-Control: private`. No accessible por URL directa (bloqueado por `Images/.htaccess`). |
 
 ## Recurrentes (protegidas)
 | Método | Ruta | Notas |
@@ -64,7 +71,7 @@
 ## Analítica (protegidas)
 | Método | Ruta | Notas |
 |---|---|---|
-| GET | `/analytics/all` | **PREFERIDO.** `?month_year,months,days` → bundle: `summary, monthly, categories, category_comparison, payment_methods, trends, projection, daily`. **1 sola petición** = ahorra conexiones MySQL. El front (`useDataStore.fetchAnalytics`) usa este. **Fase 2 DualBalance**: `summary` ahora incluye `current_period_start: 'YYYY-MM-DD'` (inicio del periodo financiero del usuario) y `net_total_historical` se calcula como `SUM(monthly_closures.surplus)` + transacciones `scope='historical'` (excluye el periodo en curso). Retrocompatible: el resto del shape no cambia. |
+| GET | `/analytics/all` | **PREFERIDO.** `?month_year,months,days` → bundle: `summary, monthly, categories, category_comparison, payment_methods, trends, projection, daily`. **1 sola petición** = ahorra conexiones MySQL. El front (`useDataStore.fetchAnalytics`) usa este. **Fase 2 DualBalance**: `summary` ahora incluye `current_period_start: 'YYYY-MM-DD'` (inicio del periodo financiero del usuario) y `net_total_historical` se calcula como `SUM(monthly_closures.surplus)` + transacciones `scope='historical'` (excluye el periodo en curso). Retrocompatible: el resto del shape no cambia. **Fase 1 ReceiptsAndSavingsStats**: `summary` incluye además `savings_goal_stats: { goal, months_met, months_exceeded, current_streak, best_streak, total_saved, avg_monthly_surplus, pct_months_met, series[] }`. `goal=null/0` → campos de cumplimiento `null`; `met=null` en serie. 0 cierres → numéricos `null`, `series:[]`. +1 query SQL a `monthly_closures` + 1 query a `users.savings_goal_monthly` (dentro del mismo endpoint, 0 round-trips extra al cliente). |
 | GET | `/analytics/summary` | `?month_year` → `AnalyticsSummary` (income, expense, balance, savings_ratio, net_total_historical, recurring_monthly, previous, saved_this_month...). **Ojo: mantiene la fórmula antigua de `net_total_historical` (deuda menor, sin caller activo en frontend)**. Usar `/analytics/all` para el cálculo nuevo. |
 | GET | `/analytics/monthly` | `?months` → `{monthly:[{month_year,income,expense}]}` |
 | GET | `/analytics/categories` | `?month_year` → `{categories:[CategoryStat]}` |

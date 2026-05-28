@@ -41,7 +41,15 @@
       "expo-font",
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ChillPocket necesita acceso a tu galería para adjuntar el justificante a esta transacción.",
+          "cameraPermission": "ChillPocket necesita acceso a la cámara para fotografiar el justificante de esta transacción.",
+          "microphonePermission": false
+        }
+      ]
     ]
   }
 }

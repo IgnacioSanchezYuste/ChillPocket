@@ -35,6 +35,8 @@ export type Transaction = {
   updated_at: string;
   /** Fase 2: determina si la transacción afecta al saldo del mes o a "Mis ahorros". */
   scope?: 'month' | 'historical';
+  /** Recibos (Ola 2): ruta del justificante en el servidor; null si no se ha adjuntado foto. */
+  receipt_path?: string | null;
 };
 
 export type Recurring = {
@@ -90,6 +92,38 @@ export type Budget = {
   auto_renew?: 0 | 1 | boolean;
 };
 
+/**
+ * Stats de la meta de ahorro mensual del usuario (Ola 2).
+ * Se añade a `AnalyticsSummary.savings_goal_stats` en `/analytics/all`.
+ * Puede llegar `null` entero si el backend falla o el usuario no tiene cierres
+ * → trátalo siempre como opcional en la UI.
+ */
+export type SavingsGoalStats = {
+  /** Objetivo mensual en divisa del usuario; null si no tiene meta configurada. */
+  goal: number | null;
+  /** Meses en los que surplus >= goal (y goal > 0). null si no aplica. */
+  months_met: number | null;
+  /** Meses en los que surplus > goal. null si no aplica. */
+  months_exceeded: number | null;
+  /** Meses consecutivos recientes cumpliendo la meta. null si no aplica. */
+  current_streak: number | null;
+  /** Mejor racha histórica. null si no aplica. */
+  best_streak: number | null;
+  /** Suma de todos los surplus (incluye negativos). null si no hay cierres. */
+  total_saved: number | null;
+  /** Media mensual del surplus. null si no hay cierres. */
+  avg_monthly_surplus: number | null;
+  /** Porcentaje de meses en los que se cumplió la meta. null si no aplica. */
+  pct_months_met: number | null;
+  /** Serie cronológica de cierres mensuales. */
+  series: Array<{
+    period_start: string;
+    surplus: number;
+    goal: number | null;
+    met: boolean | null;
+  }>;
+};
+
 export type AnalyticsSummary = {
   month_year: string;
   total_income: number;
@@ -105,6 +139,8 @@ export type AnalyticsSummary = {
   saved_this_month: number;
   /** Fase 2: inicio del periodo financiero actual ('YYYY-MM-DD'). Opcional para no romper el frontend de Fase 1. */
   current_period_start?: string;
+  /** Ola 2: estadísticas de la meta de ahorro mensual. Puede ser null si el backend falla. */
+  savings_goal_stats?: SavingsGoalStats | null;
 };
 
 export type MonthlyPoint = { month_year: string; income: number; expense: number };
@@ -164,6 +200,8 @@ export type PlanFeatures = Partial<{
   cloud_backup: boolean;
   family_mode: boolean;
   fiscal_reports: boolean;
+  /** Ola 2: adjuntar fotos de justificante a transacciones. Disponible en Plus + Lifetime. */
+  receipt_photos: boolean;
 }>;
 
 export type User = {

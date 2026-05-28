@@ -288,7 +288,7 @@ selector "Aporto desde: [Este mes / Mis ahorros]".
 Calculables con `ingreso_referencia + frecuencia + objetivo_ahorro_mensual +
 transacciones_del_periodo + payday`:
 
-1. **Presupuesto diario disponible** — `(ingreso − ahorro_objetivo − gastos_hasta_hoy) / días_restantes_del_periodo`. *"Hoy puedes gastar 47 € y seguir cumpliendo tu objetivo"*.
+1. **Presupuesto diario disponible** — `(saldo_real_del_mes − ahorro_objetivo − gastos_fijos_pendientes) / días_restantes_del_periodo`. Usa el **saldo real** (`summary.balance`), NO el salario teórico: así nunca recomienda gastar dinero que aún no ha entrado (si no has cobrado, el presupuesto baja o avisa). Reserva además los **gastos fijos pendientes** del periodo (recurrentes con fecha de cobro futura, aún no materializados como transacción, ya que el backend solo expande hasta hoy) para que el número no salte cuando llega el recibo. *"Hoy puedes gastar 47 € y seguir cumpliendo tu objetivo"*. Si el saldo no cubre ni los fijos pendientes → aviso *"Tus gastos fijos pendientes no caben en tu saldo"*; si cubre fijos pero no el objetivo completo → *"…no deberías gastar más este periodo"*. Implementado en `src/components/InsightBanner.tsx`; el mensaje de éxito del onboarding (`OnboardingHost.tsx`) usa la misma fórmula con el salario declarado como proyección.
 2. **Días hasta el próximo cobro** — countdown visible en Home.
 3. **% completado del objetivo de ahorro este mes** — barra de progreso.
 4. **Racha de días dentro del presupuesto** — gamificación motivadora.
@@ -335,17 +335,23 @@ forman parte del paquete **Plus** (feature `advanced_analytics`).
 12. **Success** con resumen personalizado: *"Hola Ignacio, hoy puedes gastar 47 € y seguir ahorrando 300 € este mes 🎯"*.
 
 ### 11.2 Demo data — borrado al finalizar
-Las transacciones, recurrentes y contribuciones que el usuario cree durante los
-pasos 8-10 son **demo**, se borran al llegar a `success` o al pulsar "Saltar tutorial".
+El gasto del paso 8 (Cena) y el gasto fijo del paso 9 (Netflix) son **demo**: se
+borran al llegar a `success` o al pulsar "Saltar tutorial". **El ingreso del paso
+10 (Nómina) NO es demo: persiste** como ingreso recurrente real del usuario
+(decisión 2026-05-28). Por eso `createIncome` ya no captura su id para borrado.
 
-Mecanismo (decisión cerrada — Opción C del frontend-engineer):
-- `useOnboardingStore` mantiene `demoTransactionIds: number[]`, `demoRecurringIds: number[]`.
-- Los IDs se persisten en AsyncStorage por si la app crashea entre la creación
-  y el borrado.
-- Al `finish()` o `skipAll()`, el store itera sobre los arrays y llama a
-  `transactionsApi.delete(id)` y `recurringApi.delete(id)`. Después
-  `refreshAll(true)` UNA sola vez.
-- Sin cambios de SQL ni filtros nuevos en backend.
+Mecanismo (`useOnboardingStore`):
+- Mantiene `demoTransactionIds: number[]` (Cena) y `demoRecurringIds: number[]` (Netflix),
+  persistidos en AsyncStorage por si la app crashea entre la creación y el borrado.
+- Al crear un recurrente, el backend lo materializa como transacción (FK
+  `recurring_id` ON DELETE SET NULL: borrar el recurrente NO borra su transacción).
+  Por eso `deleteDemoData()`: (1) recolecta las tx con `recurring_id ∈ demoRecurringIds`,
+  (2) borra los **recurrentes primero** (si no, el middleware `expandRecurringTransactions`
+  —corre en cada request— las regeneraría), (3) borra esas tx huérfanas + las demo
+  sueltas, (4) `refreshAll(true)` UNA vez.
+- **Dependencia backend**: `POST /recurring` debe devolver el id del recurrente
+  (no el de la última transacción que inserta `expandRecurringTransactions`). Corregido
+  capturando `lastInsertId()` antes de expandir — requiere FTP de `index.php`.
 
 ### 11.3 Replay del tutorial (botón "Ver tutorial de nuevo")
 Si el usuario ya tiene datos reales (cualquier transacción, recurrente o meta

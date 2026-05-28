@@ -1638,10 +1638,303 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
     $group->delete('/transactions/{id}', function (Request $request, Response $response, array $args) use ($conn) {
         $jwt = $request->getAttribute('user');
+        $uid = (int)$jwt['user_id'];
+        $txId = (int)$args['id'];
+
+        // Leer receipt_path antes de borrar la fila para poder unlink el archivo.
+        $rp = $conn->prepare("SELECT receipt_path FROM transactions WHERE id = :id AND user_id = :u LIMIT 1");
+        $rp->execute([':id' => $txId, ':u' => $uid]);
+        $rpRow = $rp->fetch(PDO::FETCH_ASSOC);
+
         $stmt = $conn->prepare("DELETE FROM transactions WHERE id = :id AND user_id = :u");
-        $stmt->execute([':id'=>(int)$args['id'], ':u'=>(int)$jwt['user_id']]);
+        $stmt->execute([':id' => $txId, ':u' => $uid]);
         if ($stmt->rowCount() === 0) return jsonResponse($response, ['error'=>true,'message'=>'No existe'], 404);
+
+        // Borrar archivo de recibo si existía (silencioso: no falla la petición si unlink falla).
+        if ($rpRow && !empty($rpRow['receipt_path'])) {
+            $physPath = __DIR__ . DIRECTORY_SEPARATOR . (string)$rpRow['receipt_path'];
+            // Validar que la ruta resuelta está dentro de Images/ (sin path traversal).
+            $imagesBase = realpath(__DIR__ . DIRECTORY_SEPARATOR . 'Images');
+            $resolved   = realpath($physPath);
+            if ($imagesBase && $resolved && strpos($resolved, $imagesBase . DIRECTORY_SEPARATOR) === 0) {
+                @unlink($resolved);
+            }
+        }
+
         return jsonResponse($response, ['success'=>true]);
+    });
+
+    // ------ TRANSACTION RECEIPTS ------
+    // POST /transactions/{id}/receipt  — sube o reemplaza la foto del recibo.
+    // Solo usuarios Plus/Lifetime (gate server-side sobre feature 'receipt_photos').
+    $group->post('/transactions/{id}/receipt', function (Request $request, Response $response, array $args) use ($conn) {
+        $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
+        $txId = (int)$args['id'];
+
+        // (a) Propiedad: la transacción existe y pertenece al usuario.
+        $chk = $conn->prepare("SELECT id, receipt_path FROM transactions WHERE id = :id AND user_id = :u LIMIT 1");
+        $chk->execute([':id' => $txId, ':u' => $uid]);
+        $tx = $chk->fetch(PDO::FETCH_ASSOC);
+        if (!$tx) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Transacción no encontrada'], 404);
+        }
+
+        // (b) Gate Plus server-side — verifica feature 'receipt_photos' en el plan activo.
+        $ent = getUserEntitlements($conn, $uid);
+        if (empty($ent['features']['receipt_photos'])) {
+            return jsonResponse($response, [
+                'error'   => true,
+                'code'    => 'plan_limit_reached',
+                'message' => 'Adjuntar recibos requiere ChillPocket Plus.',
+                'entity'  => 'receipt_photos',
+                'plan'    => $ent['plan_code'],
+            ], 403);
+        }
+
+        // (c) Verificar que GD está disponible — sin él no podemos re-encodar de forma segura.
+        if (!extension_loaded('gd')) {
+            error_log('[receipt/upload] Extensión GD no disponible en este servidor');
+            return jsonResponse($response, ['error'=>true,'message'=>'Error interno del servidor (imagen no procesable)'], 500);
+        }
+
+        // (d) Obtener el archivo subido desde $_FILES (multipart).
+        $files = $request->getUploadedFiles();
+        if (empty($files['receipt'])) {
+            // $_FILES puede estar disponible directamente si Slim no lo procesó.
+            if (empty($_FILES['receipt']) || $_FILES['receipt']['error'] !== UPLOAD_ERR_OK) {
+                $uploadErr = $_FILES['receipt']['error'] ?? UPLOAD_ERR_NO_FILE;
+                if ($uploadErr === UPLOAD_ERR_INI_SIZE || $uploadErr === UPLOAD_ERR_FORM_SIZE) {
+                    return jsonResponse($response, ['error'=>true,'message'=>'El archivo supera el tamaño permitido (máx. 5 MB)'], 413);
+                }
+                return jsonResponse($response, ['error'=>true,'message'=>'No se recibió ningún archivo en el campo "receipt"'], 400);
+            }
+            $tmpPath  = (string)$_FILES['receipt']['tmp_name'];
+            $fileSize = (int)$_FILES['receipt']['size'];
+        } else {
+            /** @var \Psr\Http\Message\UploadedFileInterface $uploaded */
+            $uploaded = $files['receipt'];
+            if ($uploaded->getError() !== UPLOAD_ERR_OK) {
+                $uploadErr = $uploaded->getError();
+                if ($uploadErr === UPLOAD_ERR_INI_SIZE || $uploadErr === UPLOAD_ERR_FORM_SIZE) {
+                    return jsonResponse($response, ['error'=>true,'message'=>'El archivo supera el tamaño permitido (máx. 5 MB)'], 413);
+                }
+                return jsonResponse($response, ['error'=>true,'message'=>'Error al recibir el archivo'], 400);
+            }
+            // Mover a temporal para poder leerlo de forma estándar.
+            $tmpPath  = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'rcp_' . bin2hex(random_bytes(8));
+            $uploaded->moveTo($tmpPath);
+            $fileSize = (int)$uploaded->getSize();
+        }
+
+        // (c) Tamaño <= 5 MB validado en código, independientemente de php.ini.
+        $maxBytes = 5 * 1024 * 1024;
+        if ($fileSize > $maxBytes) {
+            @unlink($tmpPath);
+            return jsonResponse($response, ['error'=>true,'message'=>'El archivo supera el límite de 5 MB'], 413);
+        }
+        // Leer los primeros bytes para magia.
+        $handle = @fopen($tmpPath, 'rb');
+        if (!$handle) {
+            @unlink($tmpPath);
+            error_log('[receipt/upload] No se pudo abrir tmp: ' . $tmpPath);
+            return jsonResponse($response, ['error'=>true,'message'=>'Error al procesar el archivo'], 500);
+        }
+        $header = fread($handle, 12);
+        fclose($handle);
+
+        // (d) Validar magic bytes: JPEG (FFD8FF), PNG (89504E47), WebP (52494646....57454250).
+        $isJpeg = strlen($header) >= 3 && substr($header, 0, 3) === "\xFF\xD8\xFF";
+        $isPng  = strlen($header) >= 4 && substr($header, 0, 4) === "\x89PNG";
+        $isWebp = strlen($header) >= 12
+                  && substr($header, 0, 4) === 'RIFF'
+                  && substr($header, 8, 4) === 'WEBP';
+
+        if (!$isJpeg && !$isPng && !$isWebp) {
+            @unlink($tmpPath);
+            return jsonResponse($response, [
+                'error'   => true,
+                'message' => 'Formato no permitido. Solo se aceptan JPEG, PNG y WebP.',
+            ], 415);
+        }
+
+        // (e) Confirmar imagen real con getimagesize y comprobar dimensiones.
+        $imgInfo = @getimagesize($tmpPath);
+        if (!$imgInfo || $imgInfo[0] === 0 || $imgInfo[1] === 0) {
+            @unlink($tmpPath);
+            return jsonResponse($response, ['error'=>true,'message'=>'El archivo no es una imagen válida'], 400);
+        }
+        $imgW = (int)$imgInfo[0];
+        $imgH = (int)$imgInfo[1];
+        // Límite por lado y por área total (anti decompression-bomb: 4000×4000=16MP
+        // ya ~64MB en GD; cap el área para no agotar memoria con varias subidas).
+        if ($imgW > 4000 || $imgH > 4000 || ($imgW * $imgH) > 24000000) {
+            @unlink($tmpPath);
+            return jsonResponse($response, [
+                'error'   => true,
+                'message' => 'Dimensiones demasiado grandes (máx. 4000 × 4000 px)',
+            ], 400);
+        }
+
+        // Re-encodar con GD → JPEG calidad 85.
+        // Esto: (1) strip EXIF/GPS, (2) neutraliza polyglots (SVG disfrazado, etc.),
+        // (3) normaliza formato de salida a JPEG predecible.
+        $rawData = @file_get_contents($tmpPath);
+        @unlink($tmpPath); // ya no necesitamos el tmp
+        if ($rawData === false) {
+            error_log('[receipt/upload] No se pudo leer tmp después de subir');
+            return jsonResponse($response, ['error'=>true,'message'=>'Error al procesar el archivo'], 500);
+        }
+
+        $gdImg = @imagecreatefromstring($rawData);
+        if ($gdImg === false) {
+            error_log('[receipt/upload] GD no pudo crear imagen desde raw data (user=' . $uid . ')');
+            return jsonResponse($response, ['error'=>true,'message'=>'El archivo no es una imagen válida o está corrupto'], 400);
+        }
+
+        // Capturar salida JPEG en buffer.
+        ob_start();
+        $encOk = imagejpeg($gdImg, null, 85);
+        $jpegData = ob_get_clean();
+        imagedestroy($gdImg);
+
+        if (!$encOk || $jpegData === false || strlen((string)$jpegData) === 0) {
+            error_log('[receipt/upload] imagejpeg falló (user=' . $uid . ')');
+            return jsonResponse($response, ['error'=>true,'message'=>'No se pudo procesar la imagen'], 500);
+        }
+
+        // Crear directorio de usuario si no existe.
+        $imagesBase = __DIR__ . DIRECTORY_SEPARATOR . 'Images';
+        $userDir    = $imagesBase . DIRECTORY_SEPARATOR . $uid;
+        if (!is_dir($userDir)) {
+            if (!mkdir($userDir, 0755, true)) {
+                error_log('[receipt/upload] No se pudo crear directorio: ' . $userDir);
+                return jsonResponse($response, ['error'=>true,'message'=>'Error interno al guardar el archivo'], 500);
+            }
+        }
+
+        // Nombre aleatorio generado server-side (el nombre del cliente se ignora).
+        $filename  = bin2hex(random_bytes(16)) . '.jpg';
+        $newPath   = $userDir . DIRECTORY_SEPARATOR . $filename;
+        $relPath   = 'Images' . DIRECTORY_SEPARATOR . $uid . DIRECTORY_SEPARATOR . $filename;
+        // Usar '/' como separador en la BDD (portable y sin conflicto con realpath).
+        $relPathDb = 'Images/' . $uid . '/' . $filename;
+
+        if (file_put_contents($newPath, $jpegData) === false) {
+            error_log('[receipt/upload] No se pudo escribir: ' . $newPath);
+            return jsonResponse($response, ['error'=>true,'message'=>'Error interno al guardar el archivo'], 500);
+        }
+
+        // Si la transacción ya tenía recibo, borrar el anterior.
+        $oldPath = (string)($tx['receipt_path'] ?? '');
+        if ($oldPath !== '') {
+            $oldPhys = realpath(__DIR__ . DIRECTORY_SEPARATOR . $oldPath);
+            $baseReal = realpath($imagesBase);
+            if ($baseReal && $oldPhys && strpos($oldPhys, $baseReal . DIRECTORY_SEPARATOR) === 0) {
+                @unlink($oldPhys);
+            }
+        }
+
+        // Actualizar receipt_path en la BDD.
+        $upd = $conn->prepare("UPDATE transactions SET receipt_path = :rp WHERE id = :id AND user_id = :u");
+        $upd->execute([':rp' => $relPathDb, ':id' => $txId, ':u' => $uid]);
+
+        return jsonResponse($response, [
+            'success'     => true,
+            'receipt_url' => '/transactions/' . $txId . '/receipt',
+        ]);
+    });
+
+    // DELETE /transactions/{id}/receipt  — borra la foto de recibo.
+    $group->delete('/transactions/{id}/receipt', function (Request $request, Response $response, array $args) use ($conn) {
+        $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
+        $txId = (int)$args['id'];
+
+        // Propiedad y lectura del path actual.
+        $chk = $conn->prepare("SELECT id, receipt_path FROM transactions WHERE id = :id AND user_id = :u LIMIT 1");
+        $chk->execute([':id' => $txId, ':u' => $uid]);
+        $tx = $chk->fetch(PDO::FETCH_ASSOC);
+        if (!$tx) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Transacción no encontrada'], 404);
+        }
+
+        // Borrar archivo físico si existe.
+        $oldPath = (string)($tx['receipt_path'] ?? '');
+        if ($oldPath !== '') {
+            $imagesBase = realpath(__DIR__ . DIRECTORY_SEPARATOR . 'Images');
+            $physPath   = realpath(__DIR__ . DIRECTORY_SEPARATOR . $oldPath);
+            if ($imagesBase && $physPath && strpos($physPath, $imagesBase . DIRECTORY_SEPARATOR) === 0) {
+                @unlink($physPath);
+            }
+        }
+
+        // Poner receipt_path a NULL (aunque ya fuera NULL no rompe nada).
+        $upd = $conn->prepare("UPDATE transactions SET receipt_path = NULL WHERE id = :id AND user_id = :u");
+        $upd->execute([':id' => $txId, ':u' => $uid]);
+
+        return jsonResponse($response, ['success'=>true]);
+    });
+
+    // GET /transactions/{id}/receipt  — sirve la imagen del recibo (privada, autenticada).
+    $group->get('/transactions/{id}/receipt', function (Request $request, Response $response, array $args) use ($conn) {
+        $jwt  = $request->getAttribute('user');
+        $uid  = (int)$jwt['user_id'];
+        $txId = (int)$args['id'];
+
+        // Propiedad.
+        $chk = $conn->prepare("SELECT receipt_path FROM transactions WHERE id = :id AND user_id = :u LIMIT 1");
+        $chk->execute([':id' => $txId, ':u' => $uid]);
+        $tx = $chk->fetch(PDO::FETCH_ASSOC);
+        if (!$tx) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Transacción no encontrada'], 404);
+        }
+
+        $relPath = (string)($tx['receipt_path'] ?? '');
+        if ($relPath === '') {
+            return jsonResponse($response, ['error'=>true,'message'=>'Esta transacción no tiene recibo'], 404);
+        }
+
+        // Validar que la ruta física está dentro de Images/ (evita path traversal).
+        $imagesBase = realpath(__DIR__ . DIRECTORY_SEPARATOR . 'Images');
+        $physPath   = realpath(__DIR__ . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relPath));
+
+        if (!$imagesBase || !$physPath || strpos($physPath, $imagesBase . DIRECTORY_SEPARATOR) !== 0) {
+            error_log('[receipt/get] path traversal detectado — uid=' . $uid . ' txId=' . $txId . ' relPath=' . $relPath);
+            return jsonResponse($response, ['error'=>true,'message'=>'Archivo no disponible'], 404);
+        }
+
+        if (!is_file($physPath)) {
+            // El archivo no existe en disco pero hay ruta en BDD → limpiar referencia huérfana.
+            $conn->prepare("UPDATE transactions SET receipt_path = NULL WHERE id = :id AND user_id = :u")
+                 ->execute([':id' => $txId, ':u' => $uid]);
+            return jsonResponse($response, ['error'=>true,'message'=>'Recibo no disponible'], 404);
+        }
+
+        // Determinar Content-Type por extensión real del archivo guardado.
+        $ext = strtolower(pathinfo($physPath, PATHINFO_EXTENSION));
+        $mime = match($ext) {
+            'jpg', 'jpeg' => 'image/jpeg',
+            'png'         => 'image/png',
+            'webp'        => 'image/webp',
+            default       => 'application/octet-stream',
+        };
+
+        // Enviar la imagen directamente con headers de seguridad apropiados.
+        // Usamos la Response de Slim para ser compatibles con el middleware CORS.
+        $imgData = @file_get_contents($physPath);
+        if ($imgData === false) {
+            error_log('[receipt/get] No se pudo leer el archivo: ' . $physPath);
+            return jsonResponse($response, ['error'=>true,'message'=>'Error al servir el archivo'], 500);
+        }
+
+        $response->getBody()->write($imgData);
+        return $response
+            ->withHeader('Content-Type', $mime)
+            ->withHeader('X-Content-Type-Options', 'nosniff')
+            ->withHeader('Content-Disposition', 'inline; filename="receipt-' . $txId . '.jpg"')
+            ->withHeader('Cache-Control', 'private, max-age=3600')
+            ->withStatus(200);
     });
 
     // ------ TRANSACTIONS EXPORT ------
@@ -1859,9 +2152,14 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             ':s'=>$start, ':e'=>$end, ':no'=>$notes ?: null
         ]);
 
+        // Capturar el id del recurrente ANTES de expandir: expandRecurringTransactions
+        // inserta transacciones y dejaría lastInsertId() apuntando a la última de
+        // ellas, devolviendo un id equivocado al cliente (rompía el borrado del demo).
+        $newId = (int)$conn->lastInsertId();
+
         // Regenerar transacciones inmediatamente
         try { expandRecurringTransactions($conn, (int)$jwt['user_id']); } catch (Throwable $e) {}
-        return jsonResponse($response, ['success'=>true,'id'=>(int)$conn->lastInsertId()], 201);
+        return jsonResponse($response, ['success'=>true,'id'=>$newId], 201);
     });
 
     $group->put('/recurring/{id}', function (Request $request, Response $response, array $args) use ($conn) {
@@ -2730,6 +3028,123 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             'projected_6_months'    => round($monthlyNet * 6, 2),
             'projected_12_months'   => round($monthlyNet * 12, 2),
         ];
+
+        // ---- savings_goal_stats (additivo en summary) ----
+        // +1 query al monthly_closures del usuario + savings_goal_monthly del usuario
+        // (ya cargado vía getUserPayday() → evitamos re-query a users si el cache está;
+        //  pero savings_goal_monthly no está en ese cache, así que una sola SELECT lo trae).
+        $savingsGoalStats = null;
+        try {
+            // Leer savings_goal_monthly del usuario (1 query, comparte conexión PDO).
+            $sgStmt = $conn->prepare(
+                "SELECT savings_goal_monthly FROM users WHERE id = :u LIMIT 1"
+            );
+            $sgStmt->execute([':u' => $uid]);
+            $sgRow = $sgStmt->fetch(PDO::FETCH_ASSOC);
+            $goalMonthly = $sgRow && $sgRow['savings_goal_monthly'] !== null
+                           ? (float)$sgRow['savings_goal_monthly']
+                           : null;
+
+            // Traer todos los cierres del usuario ordenados ASC (1 query).
+            $clStmt = $conn->prepare(
+                "SELECT period_start, surplus FROM monthly_closures
+                 WHERE user_id = :u ORDER BY period_start ASC"
+            );
+            $clStmt->execute([':u' => $uid]);
+            $closures = $clStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $totalCierres = count($closures);
+
+            if ($totalCierres === 0) {
+                // Sin cierres → numéricos null, serie vacía.
+                $savingsGoalStats = [
+                    'goal'               => $goalMonthly,
+                    'months_met'         => null,
+                    'months_exceeded'    => null,
+                    'current_streak'     => null,
+                    'best_streak'        => null,
+                    'total_saved'        => null,
+                    'avg_monthly_surplus'=> null,
+                    'pct_months_met'     => null,
+                    'series'             => [],
+                ];
+            } else {
+                // Calcular métricas en PHP sobre el array (sin round-trips extra).
+                $goalPositive  = ($goalMonthly !== null && $goalMonthly > 0);
+                $monthsMet      = 0;
+                $monthsExceeded = 0;
+                $totalSurplus   = 0.0;
+                $series         = [];
+
+                foreach ($closures as $cl) {
+                    $surplus = (float)$cl['surplus'];
+                    $totalSurplus += $surplus;
+                    $met = $goalPositive ? ($surplus >= $goalMonthly) : null;
+                    if ($goalPositive && $surplus >= $goalMonthly) $monthsMet++;
+                    if ($goalPositive && $surplus > $goalMonthly)  $monthsExceeded++;
+                    $series[] = [
+                        'period_start' => $cl['period_start'],
+                        'surplus'      => round($surplus, 2),
+                        'goal'         => $goalMonthly,
+                        'met'          => $met,
+                    ];
+                }
+
+                $avgSurplus = round($totalSurplus / $totalCierres, 2);
+
+                // Racha actual: recorrer la serie en orden INVERSO y contar
+                // meses consecutivos donde met=true (se detiene al primer false/null).
+                $currentStreak = null;
+                $bestStreak    = null;
+                if ($goalPositive) {
+                    $streak = 0;
+                    for ($i = $totalCierres - 1; $i >= 0; $i--) {
+                        if ($series[$i]['met'] === true) {
+                            $streak++;
+                        } else {
+                            break;
+                        }
+                    }
+                    $currentStreak = $streak;
+
+                    // Mejor racha: recorrer en orden ASC.
+                    $best   = 0;
+                    $run    = 0;
+                    foreach ($series as $s) {
+                        if ($s['met'] === true) {
+                            $run++;
+                            if ($run > $best) $best = $run;
+                        } else {
+                            $run = 0;
+                        }
+                    }
+                    $bestStreak = $best;
+                }
+
+                $pctMet = $goalPositive
+                    ? round(($monthsMet / $totalCierres) * 100, 2)
+                    : null;
+
+                $savingsGoalStats = [
+                    'goal'               => $goalMonthly,
+                    'months_met'         => $goalPositive ? $monthsMet      : null,
+                    'months_exceeded'    => $goalPositive ? $monthsExceeded : null,
+                    'current_streak'     => $currentStreak,
+                    'best_streak'        => $bestStreak,
+                    'total_saved'        => round($totalSurplus, 2),
+                    'avg_monthly_surplus'=> $avgSurplus,
+                    'pct_months_met'     => $pctMet,
+                    'series'             => $series,
+                ];
+            }
+        } catch (Throwable $sgErr) {
+            // No debe tumbar la request si falla; loguear y devolver null.
+            error_log('[analytics/all savings_goal_stats] ' . $sgErr->getMessage());
+            $savingsGoalStats = null;
+        }
+
+        // Inyectar savings_goal_stats dentro de summary (additivo, retrocompatible).
+        $summary['savings_goal_stats'] = $savingsGoalStats;
 
         return jsonResponse($response, [
             'summary'             => $summary,

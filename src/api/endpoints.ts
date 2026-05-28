@@ -1,4 +1,4 @@
-import { http } from './http';
+import { http, API_URL } from './http';
 import type {
   AuthResponse,
   Budget,
@@ -98,6 +98,39 @@ export const transactionsApi = {
         transformResponse: [(d) => d], // evita que axios intente JSON.parse el CSV
       })
       .then((r) => r.data),
+
+  // -------- RECIBOS (Ola 2) --------
+
+  /**
+   * Sube (o reemplaza) la foto del justificante de una transacción.
+   * Gate Plus/Lifetime: el backend devuelve 403 si el plan no lo permite.
+   * El campo multipart debe llamarse `receipt`.
+   * IMPORTANTE: NO forzamos `application/json`; dejamos que el navegador/RN
+   * ponga el boundary correcto del multipart. Axios no añadirá JSON Content-Type
+   * si le pasamos FormData.
+   */
+  uploadReceipt: (id: number, form: FormData): Promise<{ success: boolean; receipt_url: string }> =>
+    http
+      .post<{ success: boolean; receipt_url: string }>(`/transactions/${id}/receipt`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data),
+
+  /**
+   * Elimina la foto de justificante de una transacción.
+   * El backend borra el archivo físico y pone receipt_path = NULL en BDD.
+   */
+  deleteReceipt: (id: number): Promise<void> =>
+    http.delete(`/transactions/${id}/receipt`).then(() => undefined),
+
+  /**
+   * Construye la URL absoluta del endpoint de stream privado del recibo.
+   * NO hace fetch — sólo devuelve la URL para usarla en AuthImage.
+   * El token JWT se añade en la cabecera Authorization en AuthImage,
+   * porque el backend requiere autenticación para servir la imagen.
+   */
+  getReceiptUrl: (id: number): string =>
+    `${API_URL}/transactions/${id}/receipt`,
 };
 
 // -------- RECURRING --------

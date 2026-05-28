@@ -25,7 +25,7 @@ import { useBilling } from '../../store/useBillingStore';
 import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
 import { paymentMethodLabel, paymentMethodMeta } from '../../utils/paymentMethods';
 import { categoryIonicon } from '../../utils/categoryIcon';
-import type { CategoryStat, PaymentMethod } from '../../api/types';
+import type { CategoryStat, PaymentMethod, SavingsGoalStats } from '../../api/types';
 
 function rgba(hex: string, alpha: number) {
   const h = (hex || '').replace('#', '');
@@ -253,6 +253,15 @@ export const AnalyticsScreen: React.FC = () => {
                 />
               </View>
             )}
+
+            {/* Meta de ahorro — gratis: KPIs racha; Plus: gráfica + detalle */}
+            <SavingsGoalSection
+              stats={summary?.savings_goal_stats}
+              canAdvanced={canAdvanced}
+              currency={currency}
+              chartW={chartWFull}
+              onGoToGoals={() => navigation.navigate('Goals')}
+            />
 
             {/* Gastos por categoría · donut + leyenda */}
             <Card padding="lg">
@@ -704,6 +713,477 @@ const AnalyticsSkeleton: React.FC = () => {
     </View>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Helpers locales de la sección de meta de ahorro
+// ---------------------------------------------------------------------------
+
+/** Etiqueta corta de mes: "ene 25", "feb 25"… */
+function shortMonthLabel(monthYear: string): string {
+  const [y, m] = monthYear.split('-').map(Number);
+  if (!y || !m) return monthYear;
+  const d = new Date(y, m - 1, 1);
+  const mon = d.toLocaleDateString('es-ES', { month: 'short' }).replace('.', '');
+  return `${mon} ${String(y).slice(2)}`;
+}
+
+/** Copy motivador según la racha actual (español de España, tono cercano premium). */
+function streakCopy(streak: number): string {
+  if (streak === 0) return 'Empieza este mes cumpliendo tu meta.';
+  if (streak === 1) return 'Primer mes cumplido. Has empezado tu racha de ahorro.';
+  if (streak <= 5) return `Llevas ${streak} meses seguidos cumpliendo tu meta. Vas bien.`;
+  return `${streak} meses de racha. Eso ya es hábito, no suerte.`;
+}
+
+// ---------------------------------------------------------------------------
+// Sección principal: Meta de ahorro
+// ---------------------------------------------------------------------------
+
+type SavingsGoalSectionProps = {
+  /** Puede ser undefined (no llegó aún), null (backend falló) o el objeto completo. */
+  stats: SavingsGoalStats | null | undefined;
+  canAdvanced: boolean;
+  currency: string;
+  chartW: number;
+  onGoToGoals: () => void;
+};
+
+const SavingsGoalSection: React.FC<SavingsGoalSectionProps> = ({
+  stats,
+  canAdvanced,
+  currency,
+  chartW,
+  onGoToGoals,
+}) => {
+  const { palette } = useTheme();
+
+  // Guard: si no llegaron datos (undefined/null) no renderizamos nada.
+  if (stats === undefined || stats === null) return null;
+
+  // Sin objetivo declarado: EmptyState con CTA a Goals.
+  if (!stats.goal || stats.goal === 0) {
+    return (
+      <Card padding="lg">
+        <View style={sg.sectionHead}>
+          <View style={[sg.sectionIcon, { backgroundColor: rgba(palette.warning, 0.16) }]}>
+            <Ionicons name="flag-outline" size={18} color={palette.warning} />
+          </View>
+          <View>
+            <Text variant="h2">Meta de ahorro</Text>
+            <Text variant="caption" tone="muted">Seguimiento mensual</Text>
+          </View>
+        </View>
+        <EmptyState
+          icon="flag-outline"
+          title="Sin objetivo mensual"
+          description="Define cuánto quieres ahorrar cada mes y te mostraremos tu racha."
+          ctaLabel="Definir objetivo"
+          onCta={onGoToGoals}
+        />
+      </Card>
+    );
+  }
+
+  // Sin meses cerrados: aún no hay serie histórica.
+  if (!stats.series || stats.series.length === 0) {
+    return (
+      <Card padding="lg">
+        <View style={sg.sectionHead}>
+          <View style={[sg.sectionIcon, { backgroundColor: rgba(palette.warning, 0.16) }]}>
+            <Ionicons name="flag-outline" size={18} color={palette.warning} />
+          </View>
+          <View>
+            <Text variant="h2">Meta de ahorro</Text>
+            <Text variant="caption" tone="muted">Seguimiento mensual</Text>
+          </View>
+        </View>
+        <EmptyState
+          icon="time-outline"
+          title="Aún sin datos del primer mes"
+          description="Cuando cierre tu primer periodo financiero, verás aquí tu evolución de ahorro."
+        />
+      </Card>
+    );
+  }
+
+  const streak = stats.current_streak ?? 0;
+  const monthsMet = stats.months_met ?? 0;
+  const isLongStreak = streak >= 6;
+
+  return (
+    <Card padding="lg">
+      {/* Cabecera de sección */}
+      <View style={sg.sectionHead}>
+        <View style={[sg.sectionIcon, { backgroundColor: rgba(palette.warning, 0.16) }]}>
+          <Ionicons name="flag-outline" size={18} color={palette.warning} />
+        </View>
+        <View>
+          <Text variant="h2">Meta de ahorro</Text>
+          <Text variant="caption" tone="muted">
+            Objetivo: {formatMoney(stats.goal, currency)}/mes
+          </Text>
+        </View>
+      </View>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* KPIs GRATIS — siempre visibles (anti dark-pattern)                  */}
+      {/* ------------------------------------------------------------------ */}
+      <View style={sg.kpiRow}>
+        {/* Meses cumplidos */}
+        <View style={[sg.kpiCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+          <Ionicons name="checkmark-circle-outline" size={20} color={palette.success} />
+          <Text variant="display" tabular weight="bold" style={{ color: palette.success, lineHeight: 36 }}>
+            {monthsMet}
+          </Text>
+          <Text variant="caption" tone="muted" align="center">Meses{'\n'}cumplidos</Text>
+        </View>
+
+        {/* Racha actual con icono de llama */}
+        <View style={[sg.kpiCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+          <Ionicons name="flame" size={20} color={palette.warning} />
+          <Text variant="display" tabular weight="bold" style={{ color: palette.warning, lineHeight: 36 }}>
+            {streak}
+          </Text>
+          <Text variant="caption" tone="muted" align="center">Racha{'\n'}actual</Text>
+        </View>
+      </View>
+
+      {/* Card motivadora según racha */}
+      {isLongStreak ? (
+        // Racha ≥6: badge especial con gradientAccent
+        <LinearGradient
+          colors={palette.gradientAccent as [string, string, ...string[]]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={sg.motivationBadge}
+        >
+          <Ionicons name="flame" size={16} color="#FFFFFF" />
+          <Text variant="label" weight="semibold" style={{ color: '#FFFFFF', flex: 1 }}>
+            {streakCopy(streak)}
+          </Text>
+        </LinearGradient>
+      ) : (
+        <View style={[sg.motivationCard, { backgroundColor: rgba(palette.warning, 0.10), borderColor: rgba(palette.warning, 0.25) }]}>
+          <Ionicons name="flame" size={14} color={palette.warning} />
+          <Text variant="label" tone="secondary" style={{ flex: 1 }}>
+            {streakCopy(streak)}
+          </Text>
+        </View>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Bloque Plus — detalle avanzado (solo cubre ESTE bloque, no la racha) */}
+      {/* ------------------------------------------------------------------ */}
+      {!canAdvanced ? (
+        <View style={{ marginTop: spacing.md }}>
+          <PremiumLock label="Tu racha, en detalle" feature="advanced_analytics" />
+        </View>
+      ) : (
+        <SavingsGoalPlusDetail
+          stats={stats}
+          currency={currency}
+          chartW={chartW}
+          palette={palette}
+        />
+      )}
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Sub-componente Plus: KPIs extra + gráfica de barras
+// ---------------------------------------------------------------------------
+
+type SavingsGoalPlusDetailProps = {
+  stats: SavingsGoalStats;
+  currency: string;
+  chartW: number;
+  palette: ReturnType<typeof useTheme>['palette'];
+};
+
+const SavingsGoalPlusDetail: React.FC<SavingsGoalPlusDetailProps> = ({
+  stats,
+  currency,
+  chartW,
+  palette,
+}) => {
+  // Limitar a los últimos 12 meses si la serie es larga.
+  const visibleSeries = useMemo(() => {
+    if (!stats.series || stats.series.length === 0) return [];
+    return stats.series.length > 12
+      ? stats.series.slice(stats.series.length - 12)
+      : stats.series;
+  }, [stats.series]);
+
+  // Datos para BarChart: una barra por mes con surplus.
+  // react-native-chart-kit solo soporta un color uniforme en BarChart nativo;
+  // usamos el verde suave como color base y mostramos met/no-met via leyenda.
+  const chartData = useMemo(() => {
+    if (visibleSeries.length === 0) return null;
+    return {
+      labels: visibleSeries.map((p) => shortMonthLabel(p.period_start)),
+      datasets: [
+        {
+          // Los valores negativos se tratan como 0 en BarChart de chart-kit
+          // pero los mostramos reales; puede haber barras negativas truncadas.
+          data: visibleSeries.map((p) => p.surplus),
+          // Colores individuales por barra según met (library ≥ 6.12 los soporta).
+          colors: visibleSeries.map(
+            (p) =>
+              (opacity = 1) =>
+                p.met === true
+                  ? rgba(palette.success, opacity)
+                  : rgba(palette.danger, opacity)
+          ),
+        },
+      ],
+    };
+  }, [visibleSeries, palette.success, palette.danger]);
+
+  return (
+    <View style={{ marginTop: spacing.lg, gap: spacing.md }}>
+      {/* Separador visual */}
+      <View style={[sg.divider, { borderTopColor: palette.borderSubtle }]} />
+
+      {/* KPIs Plus */}
+      <View style={sg.kpiRowSmall}>
+        <SavingsKPISmall
+          label="Mejor racha"
+          value={stats.best_streak !== null ? `${stats.best_streak}` : '—'}
+          icon="trophy-outline"
+          iconColor={palette.accent}
+          palette={palette}
+        />
+        <SavingsKPISmall
+          label="% meses cumplidos"
+          value={stats.pct_months_met !== null ? `${stats.pct_months_met.toFixed(0)}%` : '—'}
+          icon="stats-chart-outline"
+          iconColor={palette.success}
+          palette={palette}
+        />
+        <SavingsKPISmall
+          label="Meses superados"
+          value={stats.months_exceeded !== null ? `${stats.months_exceeded}` : '—'}
+          icon="trending-up-outline"
+          iconColor={palette.accent}
+          palette={palette}
+        />
+      </View>
+
+      {/* Gráfica de barras por mes */}
+      {chartData && chartData.datasets[0].data.length > 0 && (
+        <View>
+          <Text variant="label" weight="semibold" style={{ marginBottom: spacing.xs }}>
+            Surplus mensual vs meta
+          </Text>
+          <Text variant="caption" tone="muted" style={{ marginBottom: spacing.sm }}>
+            Verde: meta cumplida · Rosa: meta no alcanzada
+          </Text>
+
+          {/* Línea de meta como referencia visual antes de la gráfica */}
+          {stats.goal !== null && stats.goal > 0 && (
+            <View style={[sg.goalRefRow, { borderColor: rgba(palette.accent, 0.4) }]}>
+              <View style={[sg.goalRefDash, { backgroundColor: palette.accent }]} />
+              <Text variant="caption" tone="muted">
+                Meta: {formatMoney(stats.goal, currency)}/mes
+              </Text>
+            </View>
+          )}
+
+          <BarChart
+            data={chartData}
+            width={Math.max(chartW, 200)}
+            height={180}
+            yAxisLabel=""
+            yAxisSuffix=""
+            fromZero
+            withInnerLines={false}
+            withHorizontalLabels
+            showBarTops={false}
+            withCustomBarColorFromData
+            flatColor
+            chartConfig={{
+              backgroundGradientFrom: palette.bgSurface,
+              backgroundGradientTo: palette.bgSurface,
+              decimalPlaces: 0,
+              // Color de fallback para barras sin color individual
+              color: (opacity = 1) => rgba(palette.success, opacity),
+              labelColor: () => palette.textMuted,
+              barPercentage: 0.65,
+              propsForBackgroundLines: {
+                stroke: palette.borderSubtle,
+                strokeDasharray: '4 6',
+              },
+            }}
+            style={{ marginLeft: -8, borderRadius: radius.md }}
+          />
+
+          {/* Leyenda manual */}
+          <View style={sg.legendRow}>
+            <View style={[sg.legendDot, { backgroundColor: palette.success }]} />
+            <Text variant="caption" tone="muted">Meta cumplida</Text>
+            <View style={[sg.legendDot, { backgroundColor: palette.danger, marginLeft: spacing.md }]} />
+            <Text variant="caption" tone="muted">Meta no alcanzada</Text>
+          </View>
+        </View>
+      )}
+
+      {/* Total ahorrado + media mensual */}
+      {(stats.total_saved !== null || stats.avg_monthly_surplus !== null) && (
+        <View style={sg.summaryRow}>
+          {stats.total_saved !== null && (
+            <View style={[sg.summaryCell, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+              <Text variant="caption" tone="muted">Total acumulado</Text>
+              <Text
+                variant="h2"
+                tabular
+                weight="bold"
+                style={{ color: stats.total_saved >= 0 ? palette.success : palette.danger }}
+              >
+                {formatMoney(stats.total_saved, currency)}
+              </Text>
+            </View>
+          )}
+          {stats.avg_monthly_surplus !== null && (
+            <View style={[sg.summaryCell, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+              <Text variant="caption" tone="muted">Media mensual</Text>
+              <Text
+                variant="h2"
+                tabular
+                weight="bold"
+                style={{ color: stats.avg_monthly_surplus >= 0 ? palette.success : palette.danger }}
+              >
+                {formatMoney(stats.avg_monthly_surplus, currency)}
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+    </View>
+  );
+};
+
+// KPI pequeño para el bloque Plus
+const SavingsKPISmall: React.FC<{
+  label: string;
+  value: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor: string;
+  palette: ReturnType<typeof useTheme>['palette'];
+}> = ({ label, value, icon, iconColor, palette }) => (
+  <View style={[sg.kpiSmallCard, { backgroundColor: palette.bgElevated, borderColor: palette.borderSubtle }]}>
+    <Ionicons name={icon} size={14} color={iconColor} />
+    <Text variant="h2" tabular weight="bold" style={{ marginTop: spacing.xs }}>
+      {value}
+    </Text>
+    <Text variant="caption" tone="muted" align="center" numberOfLines={2}>
+      {label}
+    </Text>
+  </View>
+);
+
+// Estilos locales de la sección de meta de ahorro
+const sg = StyleSheet.create({
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  sectionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kpiRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  kpiCard: {
+    flex: 1,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    padding: spacing.md,
+    alignItems: 'center',
+    gap: spacing.xs,
+    minHeight: 96,
+    justifyContent: 'center',
+  },
+  motivationBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+  },
+  motivationCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    padding: spacing.md,
+  },
+  divider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  kpiRowSmall: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  kpiSmallCard: {
+    flex: 1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    padding: spacing.sm,
+    alignItems: 'center',
+    gap: 2,
+    minHeight: 78,
+    justifyContent: 'center',
+  },
+  goalRefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    alignSelf: 'flex-start',
+  },
+  goalRefDash: {
+    width: 16,
+    height: 2,
+    borderRadius: 1,
+  },
+  legendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+    flexWrap: 'wrap',
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  summaryCell: {
+    flex: 1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    padding: spacing.md,
+    gap: 4,
+  },
+});
 
 const styles = StyleSheet.create({
   header: {
