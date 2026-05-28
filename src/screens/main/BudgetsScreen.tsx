@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, ScrollView, StyleSheet, RefreshControl, Pressable } from 'react-native';
+import { View, ScrollView, StyleSheet, RefreshControl, Pressable, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useDataStore } from '../../store/useDataStore';
@@ -10,6 +10,8 @@ import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
+import { ErrorState } from '../../components/ErrorState';
+import { Skeleton } from '../../components/Skeleton';
 import { CategoryBadge } from '../../components/CategoryBadge';
 import { FAB } from '../../components/FAB';
 import { ProgressBar } from '../../components/ProgressBar';
@@ -27,7 +29,15 @@ import type { Budget, Category } from '../../api/types';
 export const BudgetsScreen: React.FC = () => {
   const { palette } = useTheme();
   const { user } = useAuthStore();
-  const { budgets, fetchBudgets, budgetsMonth, categories, fetchCategories } = useDataStore();
+  const {
+    budgets,
+    fetchBudgets,
+    budgetsMonth,
+    budgetsLoading,
+    budgetsError,
+    categories,
+    fetchCategories,
+  } = useDataStore();
   const toast = useToast();
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -35,6 +45,7 @@ export const BudgetsScreen: React.FC = () => {
   const [amount, setAmount] = useState('');
   const [resetDay, setResetDay] = useState('1');
   const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [autoRenew, setAutoRenew] = useState(false);
   const [saving, setSaving] = useState(false);
   const [activeMonth, setActiveMonth] = useState<string>(budgetsMonth || currentMonthYear());
 
@@ -56,6 +67,7 @@ export const BudgetsScreen: React.FC = () => {
     setAmount('');
     setResetDay('1');
     setCategoryId(null);
+    setAutoRenew(false);
     setSheetOpen(true);
   };
 
@@ -64,6 +76,7 @@ export const BudgetsScreen: React.FC = () => {
     setAmount(String(b.amount));
     setResetDay(String(b.reset_day || 1));
     setCategoryId(b.category_id);
+    setAutoRenew(!!b.auto_renew);
     setSheetOpen(true);
   };
 
@@ -80,7 +93,7 @@ export const BudgetsScreen: React.FC = () => {
     setSaving(true);
     try {
       if (editing) {
-        await budgetsApi.update(editing.id, { amount: amt, reset_day: rd });
+        await budgetsApi.update(editing.id, { amount: amt, reset_day: rd, auto_renew: autoRenew });
         toast.success('Presupuesto actualizado');
       } else {
         await budgetsApi.upsert({
@@ -88,6 +101,7 @@ export const BudgetsScreen: React.FC = () => {
           month_year: activeMonth,
           category_id: categoryId,
           reset_day: rd,
+          auto_renew: autoRenew,
         });
         toast.success('Presupuesto guardado');
       }
@@ -126,6 +140,71 @@ export const BudgetsScreen: React.FC = () => {
   const totalSpent = budgets.reduce((s, b) => s + Number(b.spent), 0);
   const globalPct = totalLimit > 0 ? (totalSpent / totalLimit) * 100 : 0;
 
+  // Barra de navegación de mes (se reutiliza en estados de carga/error).
+  const MonthBar = (
+    <View style={[styles.monthBar, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}>
+      <Pressable onPress={() => shiftMonth(-1)} hitSlop={8}>
+        <Ionicons name="chevron-back" size={20} color={palette.textSecondary} />
+      </Pressable>
+      <Text variant="body" weight="semibold" style={{ textTransform: 'capitalize' }}>
+        {monthLabel(activeMonth)}
+      </Text>
+      <Pressable onPress={() => shiftMonth(1)} hitSlop={8}>
+        <Ionicons name="chevron-forward" size={20} color={palette.textSecondary} />
+      </Pressable>
+    </View>
+  );
+
+  // Primera carga sin datos: skeleton de 3 barras de presupuesto.
+  if (budgetsLoading && budgets.length === 0) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
+        <ScreenHeader title="Presupuestos" subtitle="Límites mensuales por categoría" showBack />
+        <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+          {MonthBar}
+          <BudgetsSkeleton />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Error de red sin datos previos: cartel con botón Reintentar.
+  if (budgetsError && budgets.length === 0) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
+        <ScreenHeader title="Presupuestos" showBack />
+        <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+          {MonthBar}
+        </View>
+        <View style={{ flex: 1, justifyContent: 'center' }}>
+          <ErrorState
+            title="No pudimos cargar tus presupuestos"
+            description={budgetsError}
+            onRetry={() => fetchBudgets(activeMonth, true)}
+          />
+        </View>
+        <FAB onPress={openCreate} />
+        <BudgetSheet
+          visible={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          editing={editing}
+          amount={amount}
+          setAmount={setAmount}
+          resetDay={resetDay}
+          setResetDay={setResetDay}
+          categoryId={categoryId}
+          setCategoryId={setCategoryId}
+          autoRenew={autoRenew}
+          setAutoRenew={setAutoRenew}
+          expenseCategories={expenseCategories}
+          saving={saving}
+          onSave={onSave}
+          onDelete={onDelete}
+        />
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
       <ScrollView
@@ -135,17 +214,7 @@ export const BudgetsScreen: React.FC = () => {
         <ScreenHeader title="Presupuestos" subtitle="Límites mensuales por categoría" showBack />
 
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
-          <View style={[styles.monthBar, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}>
-            <Pressable onPress={() => shiftMonth(-1)} hitSlop={8}>
-              <Ionicons name="chevron-back" size={20} color={palette.textSecondary} />
-            </Pressable>
-            <Text variant="body" weight="semibold" style={{ textTransform: 'capitalize' }}>
-              {monthLabel(activeMonth)}
-            </Text>
-            <Pressable onPress={() => shiftMonth(1)} hitSlop={8}>
-              <Ionicons name="chevron-forward" size={20} color={palette.textSecondary} />
-            </Pressable>
-          </View>
+          {MonthBar}
 
           {budgets.length > 0 && (
             <Card>
@@ -166,6 +235,7 @@ export const BudgetsScreen: React.FC = () => {
             </Card>
           )}
 
+          {/* Sin datos reales: empty state (usuario sin presupuestos creados) */}
           {budgets.length === 0 ? (
             <EmptyState
               icon="wallet-outline"
@@ -220,79 +290,164 @@ export const BudgetsScreen: React.FC = () => {
 
       <FAB onPress={openCreate} />
 
-      <Sheet
+      <BudgetSheet
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
-        title={editing ? 'Editar presupuesto' : 'Nuevo presupuesto'}
-        footer={
-          <View style={{ gap: spacing.sm }}>
-            <Button title="Guardar" loading={saving} onPress={onSave} size="lg" />
-            {editing && (
-              <Button
-                title="Eliminar"
-                variant="ghost"
-                onPress={() => {
-                  setSheetOpen(false);
-                  onDelete(editing);
-                }}
-              />
-            )}
-          </View>
-        }
-      >
-        <Input
-          label="Límite mensual"
-          keyboardType="decimal-pad"
-          placeholder="0.00"
-          value={amount}
-          onChangeText={setAmount}
-        />
-        <Input
-          label="Día de reinicio (1-28)"
-          keyboardType="number-pad"
-          placeholder="1"
-          value={resetDay}
-          onChangeText={setResetDay}
-          helper="Día del mes en que vuelve a empezar el cómputo"
-        />
-        {!editing && (
-          <View style={{ gap: spacing.sm }}>
-            <Text variant="label" tone="secondary">Categoría (opcional)</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-              <Pressable
-                onPress={() => setCategoryId(null)}
-                style={[
-                  styles.allChip,
-                  {
-                    backgroundColor: categoryId === null ? palette.accentSoft : palette.bgElevated,
-                    borderColor: categoryId === null ? palette.accent : palette.borderSubtle,
-                  },
-                ]}
-              >
-                <Ionicons name="grid-outline" size={14} color={palette.textSecondary} />
-                <Text variant="label" weight={categoryId === null ? 'semibold' : 'medium'}>
-                  Todas
-                </Text>
-              </Pressable>
-              {expenseCategories.map((c: Category) => (
-                <CategoryChip
-                  key={c.id}
-                  category={c}
-                  selected={categoryId === c.id}
-                  onPress={() => setCategoryId(categoryId === c.id ? null : c.id)}
-                />
-              ))}
-            </ScrollView>
-          </View>
-        )}
-      </Sheet>
+        editing={editing}
+        amount={amount}
+        setAmount={setAmount}
+        resetDay={resetDay}
+        setResetDay={setResetDay}
+        categoryId={categoryId}
+        setCategoryId={setCategoryId}
+        autoRenew={autoRenew}
+        setAutoRenew={setAutoRenew}
+        expenseCategories={expenseCategories}
+        saving={saving}
+        onSave={onSave}
+        onDelete={onDelete}
+      />
     </SafeAreaView>
   );
 };
 
+// Sheet extraída como sub-componente para no duplicarla en los estados de error.
+type BudgetSheetProps = {
+  visible: boolean;
+  onClose: () => void;
+  editing: Budget | null;
+  amount: string;
+  setAmount: (v: string) => void;
+  resetDay: string;
+  setResetDay: (v: string) => void;
+  categoryId: number | null;
+  setCategoryId: (v: number | null) => void;
+  autoRenew: boolean;
+  setAutoRenew: (v: boolean) => void;
+  expenseCategories: Category[];
+  saving: boolean;
+  onSave: () => void;
+  onDelete: (b: Budget) => void;
+};
+
+const BudgetSheet: React.FC<BudgetSheetProps> = ({
+  visible, onClose, editing, amount, setAmount, resetDay, setResetDay,
+  categoryId, setCategoryId, autoRenew, setAutoRenew,
+  expenseCategories, saving, onSave, onDelete,
+}) => {
+  const { palette } = useTheme();
+  return (
+    <Sheet
+      visible={visible}
+      onClose={onClose}
+      title={editing ? 'Editar presupuesto' : 'Nuevo presupuesto'}
+      footer={
+        <View style={{ gap: spacing.sm }}>
+          <Button title="Guardar" loading={saving} onPress={onSave} size="lg" />
+          {editing && (
+            <Button
+              title="Eliminar"
+              variant="ghost"
+              onPress={() => { onClose(); onDelete(editing); }}
+            />
+          )}
+        </View>
+      }
+    >
+      <Input
+        label="Límite mensual"
+        keyboardType="decimal-pad"
+        placeholder="0.00"
+        value={amount}
+        onChangeText={setAmount}
+      />
+      <Input
+        label="Día de reinicio (1-28)"
+        keyboardType="number-pad"
+        placeholder="1"
+        value={resetDay}
+        onChangeText={setResetDay}
+        helper="Día del mes en que vuelve a empezar el cómputo"
+      />
+      {!editing && (
+        <View style={{ gap: spacing.sm }}>
+          <Text variant="label" tone="secondary">Categoría (opcional)</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+            <Pressable
+              onPress={() => setCategoryId(null)}
+              style={[
+                styles.allChip,
+                {
+                  backgroundColor: categoryId === null ? palette.accentSoft : palette.bgElevated,
+                  borderColor: categoryId === null ? palette.accent : palette.borderSubtle,
+                },
+              ]}
+            >
+              <Ionicons name="grid-outline" size={14} color={palette.textSecondary} />
+              <Text variant="label" weight={categoryId === null ? 'semibold' : 'medium'}>
+                Todas
+              </Text>
+            </Pressable>
+            {expenseCategories.map((c: Category) => (
+              <CategoryChip
+                key={c.id}
+                category={c}
+                selected={categoryId === c.id}
+                onPress={() => setCategoryId(categoryId === c.id ? null : c.id)}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      )}
+      {/* Toggle de auto-renovación mensual */}
+      <View style={styles.autoRenewRow}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text variant="body" weight="medium">Renovar automáticamente cada mes</Text>
+          <Text variant="caption" tone="muted">
+            Si está activo, se creará el mismo presupuesto el mes siguiente con el mismo importe.
+          </Text>
+        </View>
+        <Switch
+          value={autoRenew}
+          onValueChange={setAutoRenew}
+          trackColor={{ false: palette.borderSubtle, true: palette.accent }}
+          thumbColor={autoRenew ? palette.bgBase : palette.bgElevated}
+        />
+      </View>
+    </Sheet>
+  );
+};
+
+// Skeleton de 3 barras de presupuesto para la primera carga.
+const BudgetsSkeleton: React.FC = () => (
+  <View style={{ gap: spacing.md }}>
+    {/* Card resumen */}
+    <Skeleton height={90} borderRadius={radius.md} />
+    {/* 3 barras de presupuesto */}
+    {[0, 1, 2].map((i) => (
+      <View key={i} style={{ gap: spacing.sm }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
+          <Skeleton width={38} height={38} borderRadius={radius.md} />
+          <View style={{ flex: 1, gap: 6 }}>
+            <Skeleton width="50%" height={14} />
+            <Skeleton width="30%" height={11} />
+          </View>
+          <Skeleton width={40} height={18} />
+        </View>
+        <Skeleton height={8} borderRadius={radius.pill} />
+      </View>
+    ))}
+  </View>
+);
+
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  dot: { width: 10, height: 10, borderRadius: 5 },
+  autoRenewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingTop: spacing.sm,
+  },
   amounts: {
     marginTop: spacing.md,
     paddingTop: spacing.md,

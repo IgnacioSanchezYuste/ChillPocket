@@ -23,6 +23,7 @@ import { BudgetsScreen } from '../screens/main/BudgetsScreen';
 import { InvestmentsScreen } from '../screens/main/InvestmentsScreen';
 import { PaywallScreen } from '../screens/main/PaywallScreen';
 import { DayDetailScreen } from '../screens/main/DayDetailScreen';
+import { NetWorthScreen } from '../screens/main/NetWorthScreen';
 
 export type AppStackParamList = {
   Tabs: undefined;
@@ -32,6 +33,7 @@ export type AppStackParamList = {
   Categories: undefined;
   Budgets: undefined;
   Investments: undefined;
+  NetWorth: undefined;
   Paywall: { feature?: string } | undefined;
   DayDetail: { date: string };
 };
@@ -44,6 +46,7 @@ const MoreScreen: React.FC<any> = ({ navigation }) => {
   const items: { key: keyof typeof Ionicons.glyphMap; label: string; description: string; route: keyof AppStackParamList }[] = [
     { key: 'wallet-outline', label: 'Presupuestos', description: 'Límites mensuales por categoría', route: 'Budgets' },
     { key: 'trending-up-outline', label: 'Inversiones', description: 'Calculadora de interés compuesto', route: 'Investments' },
+    { key: 'diamond-outline', label: 'Patrimonio neto', description: 'Evolución histórica de tus ahorros', route: 'NetWorth' },
     { key: 'repeat-outline', label: 'Gastos fijos', description: 'Suscripciones y recurrentes', route: 'Recurring' },
     { key: 'flag-outline', label: 'Metas de ahorro', description: 'Objetivos y progreso', route: 'Goals' },
     { key: 'pricetags-outline', label: 'Categorías', description: 'Personaliza tus etiquetas', route: 'Categories' },
@@ -116,6 +119,7 @@ const AppStack: React.FC = () => (
     <Stack.Screen name="Settings" component={SettingsScreen} />
     <Stack.Screen name="Budgets" component={BudgetsScreen} />
     <Stack.Screen name="Investments" component={InvestmentsScreen} />
+    <Stack.Screen name="NetWorth" component={NetWorthScreen} />
     <Stack.Screen name="Paywall" component={PaywallScreen} />
     <Stack.Screen name="DayDetail" component={DayDetailScreen} />
   </Stack.Navigator>

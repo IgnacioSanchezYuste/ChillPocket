@@ -24,13 +24,18 @@ import { KPICard } from '../../components/KPICard';
 import { BalanceHero } from '../../components/BalanceHero';
 import { InsightBanner } from '../../components/InsightBanner';
 import { BrandLogo } from '../../components/BrandLogo';
-import { TransactionRow } from '../../components/TransactionRow';
+import { SwipeableTransactionRow } from '../../components/SwipeableTransactionRow';
 import { FAB } from '../../components/FAB';
 import { SkeletonTransactionRow } from '../../components/Skeleton';
 import { MonthPickerModal } from '../../components/MonthPickerModal';
 import { TransactionSheet } from '../modals/TransactionSheet';
-import { monthLabel, currentMonthYear } from '../../utils/format';
+import { monthLabel, currentMonthYear, todayISO } from '../../utils/format';
+import { transactionsApi } from '../../api/endpoints';
+import { apiError } from '../../api/http';
+import { useToast } from '../../components/Toast';
+import { confirm } from '../../utils/confirm';
 import type { Transaction } from '../../api/types';
+import type { TransactionPrefill } from '../modals/TransactionSheet';
 
 type ChartMode = 'both' | 'income' | 'expense';
 
@@ -58,8 +63,10 @@ export const DashboardScreen: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
+  const [duplicatePrefill, setDuplicatePrefill] = useState<TransactionPrefill | null>(null);
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
   const [chartMode, setChartMode] = useState<ChartMode>('both');
+  const toast = useToast();
 
   // Refresca al recibir el foco (con throttle de 30s del store). Sin polling:
   // un setInterval consumiría conexiones MySQL (cuota de Hostinger) sin valor real.
@@ -124,6 +131,41 @@ export const DashboardScreen: React.FC = () => {
       ds.push({ data: chartData.expenses, color: () => palette.danger, strokeWidth: 2.5 });
     return ds;
   }, [chartMode, chartData, palette]);
+
+  // --- Swipe actions sobre "Recientes" ---
+
+  const handleDeleteTx = useCallback(async (id: number) => {
+    const ok = await confirm({
+      title: 'Eliminar movimiento',
+      message: '¿Seguro? Esta acción no se puede deshacer.',
+      destructive: true,
+      confirmLabel: 'Eliminar',
+    });
+    if (!ok) return;
+    try {
+      await transactionsApi.remove(id);
+      await refreshAll(true);
+      toast.success('Eliminado');
+    } catch (e) {
+      toast.error(apiError(e, 'No se pudo eliminar'));
+    }
+  }, [toast, refreshAll]);
+
+  const handleDuplicateTx = useCallback((tx: Transaction) => {
+    const prefill: TransactionPrefill = {
+      amount: String(tx.amount),
+      description: tx.description,
+      type: tx.type,
+      paymentMethod: tx.payment_method ?? null,
+      category_id: tx.category_id,
+      notes: tx.notes,
+      date: todayISO(),
+      scope: tx.scope ?? 'month',
+    };
+    setEditing(null);
+    setDuplicatePrefill(prefill);
+    setSheetOpen(true);
+  }, []);
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.bgBase }}>
@@ -320,14 +362,17 @@ export const DashboardScreen: React.FC = () => {
                 </View>
               ) : (
                 recent.map((t) => (
-                  <TransactionRow
+                  <SwipeableTransactionRow
                     key={t.id}
-                    tx={t}
+                    transaction={t}
                     currency={currency}
                     onPress={() => {
                       setEditing(t);
+                      setDuplicatePrefill(null);
                       setSheetOpen(true);
                     }}
+                    onDelete={handleDeleteTx}
+                    onDuplicate={handleDuplicateTx}
                   />
                 ))
               )}

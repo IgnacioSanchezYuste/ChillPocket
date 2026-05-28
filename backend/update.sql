@@ -196,4 +196,27 @@ SET @sql4 = IF(@col4 = 0,
 );
 PREPARE _stmt FROM @sql4; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
+-- =====================================================
+-- 9) Auto-renovación de presupuestos (item 12 del ROADMAP)
+--    Bandera por presupuesto: si auto_renew=1, al consultar
+--    un mes sin ese presupuesto se clona desde el mes anterior.
+--    NOTA: la idempotencia del INSERT IGNORE en autoRenewBudgets
+--    funciona solo para presupuestos CON category_id. Para el
+--    presupuesto global (category_id NULL) MySQL/MariaDB trata
+--    cada NULL como distinto en el índice UNIQUE, por lo que
+--    INSERT IGNORE podría duplicar. Ver riesgo documentado en
+--    data-model.md §budgets.
+-- =====================================================
+SET @col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'budgets'
+      AND COLUMN_NAME  = 'auto_renew'
+);
+SET @sql = IF(@col_exists = 0,
+    "ALTER TABLE `budgets` ADD COLUMN `auto_renew` TINYINT(1) NOT NULL DEFAULT 0",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
 COMMIT;

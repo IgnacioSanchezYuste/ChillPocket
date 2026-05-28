@@ -402,6 +402,65 @@ function enforcePlanLimit(PDO $conn, int $userId, string $entity, ?string $month
     return null;
 }
 
+/**
+ * Si el usuario tiene un límite de profundidad de historial (limits.history_months)
+ * y la petición intenta acceder a un mes/fecha más antiguo de lo permitido,
+ * devuelve respuesta 403 plan_limit_reached. Si está dentro del límite o el plan
+ * es ilimitado, devuelve null.
+ *
+ * @param string|null $monthYear  Formato 'YYYY-MM' (de /analytics/all).
+ * @param string|null $from       Formato 'YYYY-MM-DD' (de /transactions).
+ */
+function enforceHistoryLimit(PDO $conn, int $userId, ?string $monthYear = null, ?string $from = null): ?array {
+    $ent    = getUserEntitlements($conn, $userId);
+    $months = $ent['limits']['history_months'] ?? null;
+    if ($months === null) return null;   // ilimitado
+    $months = (int)$months;
+    if ($months < 1) return null;         // valor inválido o 0 → no restringe
+
+    // Mes mínimo permitido = primer día del mes hace ($months - 1) meses.
+    // Ejemplo: hoy = 2026-05-27, months = 3 → permitido desde 2026-03-01.
+    $oldestAllowed = (new DateTimeImmutable('first day of this month'))
+        ->modify('-' . ($months - 1) . ' months')
+        ->format('Y-m-d');
+
+    $requestedDate = null;
+    if ($monthYear !== null && preg_match('/^\d{4}-\d{2}$/', $monthYear)) {
+        $requestedDate = $monthYear . '-01';
+    } elseif ($from !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
+        $requestedDate = $from;
+    }
+
+    if ($requestedDate !== null && $requestedDate < $oldestAllowed) {
+        return [
+            'error'          => true,
+            'code'           => 'plan_limit_reached',
+            'message'        => "Tu plan muestra los últimos {$months} meses. Plus desbloquea el historial completo.",
+            'entity'         => 'history',
+            'limit'          => $months,
+            'oldest_allowed' => $oldestAllowed,
+            'plan'           => $ent['plan_code'],
+        ];
+    }
+    return null;
+}
+
+// =====================================================
+// BILLING · RevenueCat webhook helpers
+// =====================================================
+
+/**
+ * Mapea el product_id de RevenueCat al plan_code de ChillPocket.
+ * Devuelve null si no reconoce el producto → el webhook lo trata como no-op.
+ */
+function rcProductToPlanCode(string $productId): ?string {
+    if (preg_match('/^plus_/', $productId))          return 'plus';
+    if ($productId === 'lifetime_plus')              return 'plus';
+    if (preg_match('/^family_/', $productId))        return 'family';
+    if (preg_match('/^pro_freelance_/', $productId)) return 'pro_freelance';
+    return null;
+}
+
 // =====================================================
 // GOOGLE OAUTH · verificación de ID token
 // =====================================================
@@ -782,6 +841,68 @@ function closeFinancialPeriods(PDO $conn, int $userId): void {
     }
 }
 
+/**
+ * Auto-renovación lazy de presupuestos (item 12 ROADMAP).
+ * Si el usuario tiene presupuestos con auto_renew=1 en el mes anterior
+ * y NO existen todavía en el mes solicitado, los clona.
+ * Se llama desde GET /budgets antes de devolver datos; no requiere cron.
+ *
+ * AVISO category_id NULL: el UNIQUE uniq_user_cat_month trata NULL como
+ * valor distinto en MySQL/MariaDB, por lo que INSERT IGNORE NO garantiza
+ * idempotencia para el presupuesto global (sin categoría). Para ese caso
+ * se usa un guard explícito antes de intentar la inserción.
+ *
+ * @param string $monthYear  Mes solicitado, formato 'YYYY-MM'.
+ */
+function autoRenewBudgets(PDO $conn, int $userId, string $monthYear): void {
+    $dt = DateTimeImmutable::createFromFormat('Y-m-d', $monthYear . '-01');
+    if (!$dt) return;
+    $prevMonth = $dt->modify('-1 month')->format('Y-m');
+
+    // Obtener los presupuestos del mes anterior con auto_renew=1.
+    $src = $conn->prepare("
+        SELECT category_id, amount, reset_day
+        FROM budgets
+        WHERE user_id = :u
+          AND month_year = :prev
+          AND auto_renew = 1
+    ");
+    $src->execute([':u' => $userId, ':prev' => $prevMonth]);
+    $rows = $src->fetchAll(PDO::FETCH_ASSOC);
+    if (empty($rows)) return;
+
+    // Para cada fila origen, insertar en el mes nuevo solo si no existe ya.
+    $ins = $conn->prepare("
+        INSERT IGNORE INTO budgets (user_id, category_id, amount, month_year, reset_day, auto_renew)
+        VALUES (:u, :c, :a, :m, :rd, 1)
+    ");
+    // Guard para el caso global (category_id NULL): INSERT IGNORE no garantiza
+    // idempotencia con NULL en el UNIQUE, así que comprobamos la existencia antes.
+    $chkGlobal = $conn->prepare("
+        SELECT id FROM budgets
+        WHERE user_id = :u AND month_year = :m AND category_id IS NULL
+        LIMIT 1
+    ");
+
+    foreach ($rows as $row) {
+        $catId = $row['category_id'] !== null ? (int)$row['category_id'] : null;
+
+        if ($catId === null) {
+            // Presupuesto global: guard explícito para evitar duplicado por NULL en UNIQUE.
+            $chkGlobal->execute([':u' => $userId, ':m' => $monthYear]);
+            if ($chkGlobal->fetch()) continue; // Ya existe, saltar.
+        }
+
+        $ins->execute([
+            ':u'  => $userId,
+            ':c'  => $catId,
+            ':a'  => (float)$row['amount'],
+            ':m'  => $monthYear,
+            ':rd' => (int)$row['reset_day'],
+        ]);
+    }
+}
+
 // ================= MIDDLEWARE =================
 function requireAuth(PDO $conn): callable {
     return function (Request $request, RequestHandlerInterface $handler) use ($conn) {
@@ -821,6 +942,7 @@ $app->get('/', function (Request $request, Response $response) {
             'PUT  /categories/{id}',
             'DELETE /categories/{id}',
             'GET  /transactions?from=&to=&type=&category_id=&payment_method=&search=&limit=&offset=',
+            'GET  /transactions/export?format=csv[&from=YYYY-MM-DD][&to=YYYY-MM-DD]  (Plus; descarga CSV)',
             'POST /transactions              {amount,description,type,transaction_date,category_id?,payment_method?,notes?,scope?}',
             'PUT  /transactions/{id}         (campos parciales; scope inmutable si goal_id≠null)',
             'DELETE /transactions/{id}',
@@ -848,6 +970,7 @@ $app->get('/', function (Request $request, Response $response) {
             'GET  /analytics/trends?days=30',
             'GET  /analytics/projection',
             'GET  /analytics/all?month_year=YYYY-MM&months=6&days=30   (combinado, 1 sola petición)',
+            'POST /billing/webhook/revenuecat   (pública; Authorization: <secreto RC)',
         ]
     ]);
 });
@@ -1303,7 +1426,15 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
     // ------ TRANSACTIONS ------
     $group->get('/transactions', function (Request $request, Response $response) use ($conn) {
         $jwt = $request->getAttribute('user');
+        $uid = (int)$jwt['user_id'];
         $q   = $request->getQueryParams();
+
+        // Gating de historial: usuarios free solo pueden consultar los últimos
+        // limits.history_months meses. Si $from es anterior al límite → 403.
+        $fromParam = !empty($q['from']) ? $q['from'] : null;
+        if ($err = enforceHistoryLimit($conn, $uid, null, $fromParam)) {
+            return jsonResponse($response, $err, 403);
+        }
 
         $sql = "
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
@@ -1511,6 +1642,141 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $stmt->execute([':id'=>(int)$args['id'], ':u'=>(int)$jwt['user_id']]);
         if ($stmt->rowCount() === 0) return jsonResponse($response, ['error'=>true,'message'=>'No existe'], 404);
         return jsonResponse($response, ['success'=>true]);
+    });
+
+    // ------ TRANSACTIONS EXPORT ------
+    // GET /transactions/export?format=csv[&from=YYYY-MM-DD][&to=YYYY-MM-DD]
+    // Descarga un CSV de todas las transacciones del usuario autenticado.
+    // Requiere feature flag 'export' (Plus). Si el usuario free pide un rango
+    // más antiguo que su history_months → 403. Un único LEFT JOIN con JOINs
+    // a categories, recurring_expenses y savings_goals para no multiplicar
+    // conexiones MySQL (cuota Hostinger). Máximo 50.000 filas; si se trunca
+    // añade el header X-ChillPocket-Truncated: true.
+    $group->get('/transactions/export', function (Request $request, Response $response) use ($conn) {
+        $jwt = $request->getAttribute('user');
+        $uid = (int)$jwt['user_id'];
+        $q   = $request->getQueryParams();
+
+        // 1. Validar parámetro format (solo 'csv' por ahora).
+        $format = isset($q['format']) ? strtolower(trim((string)$q['format'])) : '';
+        if ($format !== 'csv') {
+            return jsonResponse($response, [
+                'error'   => true,
+                'message' => "Parámetro 'format' obligatorio y debe ser 'csv'.",
+            ], 400);
+        }
+
+        // 2. Gate de feature: el usuario debe tener la flag 'export' activa.
+        $ent = getUserEntitlements($conn, $uid);
+        if (empty($ent['features']['export'])) {
+            return jsonResponse($response, [
+                'error'   => true,
+                'code'    => 'plan_limit_reached',
+                'message' => 'Exportar tus datos requiere Plus.',
+                'entity'  => 'export',
+                'plan'    => $ent['plan_code'],
+            ], 403);
+        }
+
+        // 3. Validar fechas opcionales y aplicar gate de historial para usuarios free.
+        $fromParam = !empty($q['from']) && validDate($q['from']) ? $q['from'] : null;
+        $toParam   = !empty($q['to'])   && validDate($q['to'])   ? $q['to']   : null;
+
+        if ($fromParam !== null) {
+            if ($err = enforceHistoryLimit($conn, $uid, null, $fromParam)) {
+                return jsonResponse($response, $err, 403);
+            }
+        }
+
+        // 4. Construir query con todos los JOINs necesarios en una sola pasada
+        //    (sin N+1: categories, recurring_expenses, savings_goals en un SELECT).
+        $sql = "
+            SELECT
+                t.transaction_date          AS fecha,
+                t.type                      AS tipo,
+                t.amount                    AS importe,
+                u.currency                  AS moneda,
+                COALESCE(c.name, 'Sin categoría') AS categoria,
+                t.description               AS descripcion,
+                COALESCE(t.payment_method, '') AS metodo_pago,
+                COALESCE(t.notes, '')       AS notas,
+                COALESCE(re.name, '')       AS recurrente,
+                COALESCE(sg.name, '')       AS meta
+            FROM transactions t
+            INNER JOIN users u ON u.id = t.user_id
+            LEFT JOIN categories c           ON c.id = t.category_id
+            LEFT JOIN recurring_expenses re  ON re.id = t.recurring_id
+            LEFT JOIN savings_goals sg       ON sg.id = t.goal_id
+            WHERE t.user_id = :u
+        ";
+        $params = [':u' => $uid];
+
+        if ($fromParam !== null) {
+            $sql .= " AND t.transaction_date >= :from";
+            $params[':from'] = $fromParam;
+        }
+        if ($toParam !== null) {
+            $sql .= " AND t.transaction_date <= :to";
+            $params[':to'] = $toParam;
+        }
+
+        // Más reciente primero, igual que en la app.
+        $sql .= " ORDER BY t.transaction_date DESC, t.id DESC LIMIT 50001";
+
+        $stmt = $conn->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Detectar truncado (si traemos más de 50.000 filas).
+        $truncated = count($rows) > 50000;
+        if ($truncated) {
+            $rows = array_slice($rows, 0, 50000);
+        }
+
+        // 5. Generar CSV en memoria con fputcsv (maneja escapado de comas,
+        //    comillas y saltos de línea internos automáticamente).
+        $stream = fopen('php://temp', 'r+b');
+
+        // BOM UTF-8: hace que Excel detecte el encoding correctamente sin
+        // que el usuario tenga que importar manualmente.
+        fwrite($stream, "\xEF\xBB\xBF");
+
+        // Encabezados en español, sin acentos, para máxima compat con Excel.
+        fputcsv($stream, ['fecha','tipo','importe','moneda','categoria','descripcion','metodo_pago','notas','recurrente','meta']);
+
+        foreach ($rows as $row) {
+            fputcsv($stream, [
+                $row['fecha'],
+                $row['tipo'],
+                number_format((float)$row['importe'], 2, '.', ''), // punto decimal, sin miles
+                $row['moneda'],
+                $row['categoria'],
+                $row['descripcion'],
+                $row['metodo_pago'],
+                $row['notas'],
+                $row['recurrente'],
+                $row['meta'],
+            ]);
+        }
+
+        // Leer el contenido generado.
+        rewind($stream);
+        $csvBody = stream_get_contents($stream);
+        fclose($stream);
+
+        // 6. Enviar respuesta con los headers correctos.
+        $filename = 'chillpocket-' . date('Y-m-d') . '.csv';
+        $response = $response
+            ->withHeader('Content-Type', 'text/csv; charset=utf-8')
+            ->withHeader('Content-Disposition', 'attachment; filename="' . $filename . '"')
+            ->withHeader('Cache-Control', 'no-store');
+
+        if ($truncated) {
+            $response = $response->withHeader('X-ChillPocket-Truncated', 'true');
+        }
+
+        $response->getBody()->write($csvBody);
+        return $response;
     });
 
     // ------ RECURRING ------
@@ -1915,14 +2181,20 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
     // ------ BUDGETS ------
     $group->get('/budgets', function (Request $request, Response $response) use ($conn) {
         $jwt = $request->getAttribute('user');
+        $uid = (int)$jwt['user_id'];
         $month = $request->getQueryParams()['month_year'] ?? date('Y-m');
         if (!validMonthYear($month)) {
             return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido (YYYY-MM)'], 400);
         }
+        // Clonado lazy desde el mes anterior si hay presupuestos con auto_renew=1.
+        // Si falla (p.ej. columna aún no migrada), logueamos y continuamos normalmente.
+        try { autoRenewBudgets($conn, $uid, $month); } catch (Throwable $e) {
+            error_log('[autoRenewBudgets] ' . $e->getMessage());
+        }
         // El gasto se calcula a partir del reset_day del presupuesto:
         // ventana = [año-mes-reset_day, +1 mes). Si reset_day = 1 equivale al mes natural.
         $stmt = $conn->prepare("
-            SELECT b.id, b.amount, b.month_year, b.reset_day, b.category_id,
+            SELECT b.id, b.amount, b.month_year, b.reset_day, b.category_id, b.auto_renew,
                    c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    COALESCE((
                        SELECT SUM(t.amount) FROM transactions t
@@ -1937,7 +2209,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             WHERE b.user_id = :u AND b.month_year = :m
             ORDER BY b.category_id IS NULL DESC, c.name
         ");
-        $stmt->execute([':u' => (int)$jwt['user_id'], ':m' => $month]);
+        $stmt->execute([':u' => $uid, ':m' => $month]);
         return jsonResponse($response, [
             'budgets'    => $stmt->fetchAll(PDO::FETCH_ASSOC),
             'month_year' => $month
@@ -1951,8 +2223,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $amount = isset($data['amount']) ? (float)$data['amount'] : -1;
         $month  = (string)($data['month_year'] ?? '');
         $catId  = isset($data['category_id']) && $data['category_id'] !== '' ? (int)$data['category_id'] : null;
-        $resetDay = isset($data['reset_day']) ? (int)$data['reset_day'] : 1;
+        $resetDay   = isset($data['reset_day']) ? (int)$data['reset_day'] : 1;
         if ($resetDay < 1 || $resetDay > 28) $resetDay = 1;
+        $autoRenew  = !empty($data['auto_renew']) ? 1 : 0;
 
         // Enforcement por plan: nº de presupuestos en este mes_year.
         if (validMonthYear($month) && ($err = enforcePlanLimit($conn, $uid, 'budgets', $month))) {
@@ -1975,12 +2248,12 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         }
 
         $stmt = $conn->prepare("
-            INSERT INTO budgets (user_id, category_id, amount, month_year, reset_day)
-            VALUES (:u, :c, :a, :m, :rd)
-            ON DUPLICATE KEY UPDATE amount = VALUES(amount), reset_day = VALUES(reset_day)
+            INSERT INTO budgets (user_id, category_id, amount, month_year, reset_day, auto_renew)
+            VALUES (:u, :c, :a, :m, :rd, :ar)
+            ON DUPLICATE KEY UPDATE amount = VALUES(amount), reset_day = VALUES(reset_day), auto_renew = VALUES(auto_renew)
         ");
         $stmt->execute([
-            ':u'=>(int)$jwt['user_id'], ':c'=>$catId, ':a'=>$amount, ':m'=>$month, ':rd'=>$resetDay
+            ':u'=>(int)$jwt['user_id'], ':c'=>$catId, ':a'=>$amount, ':m'=>$month, ':rd'=>$resetDay, ':ar'=>$autoRenew
         ]);
         return jsonResponse($response, ['success'=>true], 201);
     });
@@ -2004,6 +2277,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             $rd = (int)$data['reset_day'];
             if ($rd < 1 || $rd > 28) return jsonResponse($response, ['error'=>true,'message'=>'reset_day fuera de rango (1-28)'], 400);
             $fields[] = 'reset_day = :rd'; $params[':rd'] = $rd;
+        }
+        if (array_key_exists('auto_renew', $data)) {
+            $fields[] = 'auto_renew = :ar'; $params[':ar'] = !empty($data['auto_renew']) ? 1 : 0;
         }
         if (!$fields) return jsonResponse($response, ['error'=>true,'message'=>'Sin datos para actualizar'], 400);
 
@@ -2229,6 +2505,12 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $days   = max(1, min(180,(int)($q['days']    ?? 30)));
         if (!validMonthYear($month)) {
             return jsonResponse($response, ['error'=>true,'message'=>'month_year inválido'], 400);
+        }
+
+        // Gating de historial: usuarios free solo pueden consultar los últimos
+        // limits.history_months meses. Si month_year es anterior al límite → 403.
+        if ($err = enforceHistoryLimit($conn, $uid, $month, null)) {
+            return jsonResponse($response, $err, 403);
         }
 
         // ---- summary ----
@@ -2533,6 +2815,273 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
     });
 
 })->add(requireAuth($conn));
+
+// =====================================================
+// BILLING · Webhook RevenueCat (pública — NO bajo requireAuth)
+// =====================================================
+// RC envía eventos de compra/renovación/expiración a este endpoint.
+// La autenticación es un secreto compartido en el header Authorization,
+// definido en Conexion.php como define('REVENUECAT_WEBHOOK_AUTH', '...');
+// (nunca en el repo). Ver instrucciones de deploy.
+//
+// Contrato: devuelve 200 siempre que pase auth+parse. Nunca 5xx por
+// fallo de procesamiento (RC reintentaría). Errores → error_log + 200.
+$app->post('/billing/webhook/revenuecat', function (Request $request, Response $response) use ($conn) {
+
+    // ── 1) AUTENTICACIÓN ──────────────────────────────────────────────
+    // El secreto se lee de la constante definida en Conexion.php (no versionado)
+    // o de la variable de entorno. Si no está configurado, 503 fail-closed.
+    $expected = '';
+    if (defined('REVENUECAT_WEBHOOK_AUTH')) {
+        $expected = (string) REVENUECAT_WEBHOOK_AUTH;
+    }
+    if ($expected === '') {
+        $expected = (string) getenv('REVENUECAT_WEBHOOK_AUTH');
+    }
+    if ($expected === '') {
+        error_log('[rc_webhook] REVENUECAT_WEBHOOK_AUTH no configurado en servidor');
+        return jsonResponse($response, ['ok' => false, 'reason' => 'webhook_not_configured'], 503);
+    }
+
+    $auth = trim($request->getHeaderLine('Authorization'));
+    // hash_equals evita timing attacks al comparar secretos.
+    if (!hash_equals($expected, $auth)) {
+        error_log('[rc_webhook] auth mismatch — header recibido no coincide con el secreto configurado');
+        return jsonResponse($response, ['ok' => false], 401);
+    }
+
+    // ── 2) PARSEO DEL BODY ───────────────────────────────────────────
+    $rawBody = (string)$request->getBody();
+    $data    = json_decode($rawBody, true);
+    if (!is_array($data)) {
+        error_log('[rc_webhook] body no es JSON válido: ' . substr($rawBody, 0, 200));
+        return jsonResponse($response, ['ok' => false, 'reason' => 'invalid_json'], 400);
+    }
+
+    $event = $data['event'] ?? null;
+    if (!is_array($event) || !isset($event['id'])) {
+        error_log('[rc_webhook] body sin event.id: ' . substr($rawBody, 0, 200));
+        return jsonResponse($response, ['ok' => false, 'reason' => 'missing_event_id'], 400);
+    }
+
+    $eventId  = (string)$event['id'];
+    $type     = (string)($event['type'] ?? 'UNKNOWN');
+    $appUserId = (string)($event['app_user_id'] ?? '');
+    $productId = (string)($event['product_id'] ?? '');
+
+    // ── 3) IDEMPOTENCIA: INSERT en billing_events ────────────────────
+    // La UNIQUE KEY (provider, external_id) garantiza que si RC reenvía el
+    // mismo evento, el INSERT falla con duplicate-key (SQLSTATE 23000) y
+    // devolvemos 200 sin volver a procesar. Atómico: ahorra un SELECT previo.
+    try {
+        // Resolvemos user_id para billing_events (puede ser NULL para eventos TEST).
+        $billingUserId = null;
+        if (is_numeric($appUserId) && (int)$appUserId > 0) {
+            $billingUserId = (int)$appUserId;
+        }
+
+        $insEvent = $conn->prepare("
+            INSERT INTO billing_events (provider, event_type, external_id, user_id, payload_json)
+            VALUES ('revenuecat', :type, :eid, :uid, :raw)
+        ");
+        $insEvent->execute([
+            ':type' => $type,
+            ':eid'  => $eventId,
+            ':uid'  => $billingUserId,
+            ':raw'  => $rawBody,
+        ]);
+    } catch (PDOException $e) {
+        // SQLSTATE 23000 = Integrity constraint violation (duplicate key).
+        if ($e->getCode() === '23000') {
+            error_log('[rc_webhook] evento duplicado ignorado: ' . $eventId);
+            return jsonResponse($response, ['ok' => true, 'duplicate' => true]);
+        }
+        // Otro error de BD: loguear y 200 (RC no debe reintentar por un bug nuestro).
+        error_log('[rc_webhook] error al insertar billing_event: ' . $e->getMessage());
+        return jsonResponse($response, ['ok' => true, 'reason' => 'db_error_logged']);
+    }
+
+    // ── 4) RESOLVER USUARIO ──────────────────────────────────────────
+    // app_user_id == 'RCBillingTest' o no numérico → evento de prueba, no-op.
+    if ($appUserId === 'RCBillingTest' || !is_numeric($appUserId) || (int)$appUserId <= 0) {
+        error_log('[rc_webhook] evento TEST o app_user_id no numérico (' . $appUserId . ') — no-op');
+        return jsonResponse($response, ['ok' => true, 'test' => true]);
+    }
+    $userId = (int)$appUserId;
+
+    // Verificar que el usuario existe en nuestra BD.
+    $chkUser = $conn->prepare("SELECT id FROM users WHERE id = :id LIMIT 1");
+    $chkUser->execute([':id' => $userId]);
+    if (!$chkUser->fetchColumn()) {
+        error_log('[rc_webhook] usuario no encontrado: ' . $userId . ' (evento ' . $type . ')');
+        return jsonResponse($response, ['ok' => true, 'reason' => 'user_not_found']);
+    }
+
+    error_log('[rc_webhook] recibido type=' . $type . ' user=' . $userId . ' product=' . $productId);
+
+    // ── 5) DISPATCH POR TIPO DE EVENTO ───────────────────────────────
+    // $subscriptionId: identificador que persiste entre renewals.
+    // RC usa original_transaction_id (más estable) y transaction_id.
+    $subscriptionId = (string)($event['original_transaction_id'] ?? $event['transaction_id'] ?? $eventId);
+
+    // Fecha de expiración: NULL para lifetime/one-time.
+    $expiresAt = null;
+    if (isset($event['expiration_at_ms']) && $event['expiration_at_ms'] !== null && $event['expiration_at_ms'] !== 0) {
+        $expiresAt = gmdate('Y-m-d', (int)($event['expiration_at_ms'] / 1000));
+    }
+
+    try {
+        switch ($type) {
+
+            // ── Activar/renovar suscripción ──────────────────────────
+            case 'INITIAL_PURCHASE':
+            case 'RENEWAL':
+            case 'PRODUCT_CHANGE': {
+                $planCode = rcProductToPlanCode($productId);
+                if ($planCode === null) {
+                    error_log('[rc_webhook] product_id desconocido: ' . $productId . ' — no-op');
+                    break;
+                }
+                $source = 'revenuecat';
+
+                // Marcar las filas activas previas DEL MISMO TIPO (revenuecat / stripe) como inactivas
+                // para que getUserEntitlements() no vea dos planes activos simultáneos.
+                // OJO: NO tocamos filas con source='early_adopter' ni 'manual' — son grants
+                // permanentes que sobreviven al ciclo de billing (early adopters, comps internos).
+                // Si el usuario tiene early_adopter y compra Plus, conviven: getUserEntitlements()
+                // gana al de mayor rango y, si expira la compra, el early_adopter sigue activo.
+                $conn->prepare("UPDATE user_entitlements SET is_active = 0 WHERE user_id = :u AND is_active = 1 AND source NOT IN ('early_adopter', 'manual')")
+                     ->execute([':u' => $userId]);
+
+                // Buscar si ya existe una fila para este external_subscription_id
+                // (re-activación, PRODUCT_CHANGE, etc.).
+                $chkSub = $conn->prepare("SELECT id FROM user_entitlements WHERE user_id = :u AND external_subscription_id = :sub LIMIT 1");
+                $chkSub->execute([':u' => $userId, ':sub' => $subscriptionId]);
+                $existingId = $chkSub->fetchColumn();
+
+                if ($existingId) {
+                    $conn->prepare("UPDATE user_entitlements SET is_active = 1, plan_code = :p, source = :s, expires_at = :exp WHERE id = :id")
+                         ->execute([':p' => $planCode, ':s' => $source, ':exp' => $expiresAt, ':id' => $existingId]);
+                } else {
+                    $conn->prepare("INSERT INTO user_entitlements (user_id, plan_code, is_active, source, expires_at, external_subscription_id) VALUES (:u, :p, 1, :s, :exp, :sub)")
+                         ->execute([':u' => $userId, ':p' => $planCode, ':s' => $source, ':exp' => $expiresAt, ':sub' => $subscriptionId]);
+                }
+
+                error_log('[rc_webhook] activado plan=' . $planCode . ' source=' . $source . ' expires=' . ($expiresAt ?? 'NULL') . ' sub=' . $subscriptionId);
+                break;
+            }
+
+            // ── El usuario revierte la cancelación antes de expirar ──
+            case 'UNCANCELLATION': {
+                // La suscripción vuelve a estar activa. Reactivamos la fila.
+                $stmt = $conn->prepare("UPDATE user_entitlements SET is_active = 1 WHERE user_id = :u AND external_subscription_id = :sub");
+                $stmt->execute([':u' => $userId, ':sub' => $subscriptionId]);
+                if ($stmt->rowCount() === 0) {
+                    // Caso raro: el usuario ya no tenía una fila para esta subscripción
+                    // (compra previa al despliegue del webhook, p.ej.). Quedará en free
+                    // hasta el próximo RENEWAL. Log para que el operador lo vea.
+                    error_log('[rc_webhook] UNCANCELLATION sin filas afectadas — usuario user=' . $userId . ' sub=' . $subscriptionId . ' (¿compra previa al webhook?)');
+                } else {
+                    error_log('[rc_webhook] UNCANCELLATION — fila reactivada sub=' . $subscriptionId);
+                }
+                break;
+            }
+
+            // ── Cancelación: el usuario sigue con Plus hasta expires_at ─
+            case 'CANCELLATION': {
+                // NO desactivamos — el usuario tiene Plus hasta que expire.
+                // EXPIRATION lo desactivará en su momento.
+                error_log('[rc_webhook] CANCELLATION recibida — sin cambios (expires_at intacto) sub=' . $subscriptionId);
+                break;
+            }
+
+            // ── La suscripción ha expirado definitivamente ────────────
+            case 'EXPIRATION': {
+                $conn->prepare("UPDATE user_entitlements SET is_active = 0 WHERE user_id = :u AND external_subscription_id = :sub")
+                     ->execute([':u' => $userId, ':sub' => $subscriptionId]);
+                error_log('[rc_webhook] EXPIRATION — plan desactivado sub=' . $subscriptionId);
+                break;
+            }
+
+            // ── Problema de cobro (grace period activo) ───────────────
+            case 'BILLING_ISSUE': {
+                // No desactivamos: RC da un grace period y enviará EXPIRATION si no se resuelve.
+                error_log('[rc_webhook] BILLING_ISSUE recibida — sin cambios (grace period) sub=' . $subscriptionId);
+                break;
+            }
+
+            // ── Suscripción pausada (solo Play Store) ────────────────
+            case 'SUBSCRIPTION_PAUSED': {
+                $conn->prepare("UPDATE user_entitlements SET is_active = 0 WHERE user_id = :u AND external_subscription_id = :sub")
+                     ->execute([':u' => $userId, ':sub' => $subscriptionId]);
+                error_log('[rc_webhook] SUBSCRIPTION_PAUSED — plan desactivado sub=' . $subscriptionId);
+                break;
+            }
+
+            // ── Reembolso: devolución → revocar acceso ────────────────
+            case 'REFUND': {
+                $conn->prepare("UPDATE user_entitlements SET is_active = 0 WHERE user_id = :u AND external_subscription_id = :sub")
+                     ->execute([':u' => $userId, ':sub' => $subscriptionId]);
+                error_log('[rc_webhook] REFUND — plan desactivado sub=' . $subscriptionId);
+                break;
+            }
+
+            // ── Compra única (Lifetime Plus) ──────────────────────────
+            case 'NON_RENEWING_PURCHASE': {
+                $planCode = rcProductToPlanCode($productId);
+                if ($planCode === null) {
+                    error_log('[rc_webhook] NON_RENEWING_PURCHASE con product_id desconocido: ' . $productId . ' — no-op');
+                    break;
+                }
+                // Lifetime: expires_at = NULL, source = 'lifetime'.
+                $source = ($productId === 'lifetime_plus') ? 'lifetime' : 'revenuecat';
+                $ltExpires = ($source === 'lifetime') ? null : $expiresAt;
+
+                // Para lifetime: el external_subscription_id usamos event.id porque
+                // las compras únicas no tienen original_transaction_id persistente igual
+                // que las suscripciones en todos los stores.
+                $ltSubId = ($source === 'lifetime') ? $eventId : $subscriptionId;
+
+                // Marcar previas inactivas EXCEPTO early_adopter/manual (grants permanentes).
+                $conn->prepare("UPDATE user_entitlements SET is_active = 0 WHERE user_id = :u AND is_active = 1 AND source NOT IN ('early_adopter', 'manual')")
+                     ->execute([':u' => $userId]);
+
+                $chkSub2 = $conn->prepare("SELECT id FROM user_entitlements WHERE user_id = :u AND external_subscription_id = :sub LIMIT 1");
+                $chkSub2->execute([':u' => $userId, ':sub' => $ltSubId]);
+                $existingId2 = $chkSub2->fetchColumn();
+
+                if ($existingId2) {
+                    $conn->prepare("UPDATE user_entitlements SET is_active = 1, plan_code = :p, source = :s, expires_at = :exp WHERE id = :id")
+                         ->execute([':p' => $planCode, ':s' => $source, ':exp' => $ltExpires, ':id' => $existingId2]);
+                } else {
+                    $conn->prepare("INSERT INTO user_entitlements (user_id, plan_code, is_active, source, expires_at, external_subscription_id) VALUES (:u, :p, 1, :s, :exp, :sub)")
+                         ->execute([':u' => $userId, ':p' => $planCode, ':s' => $source, ':exp' => $ltExpires, ':sub' => $ltSubId]);
+                }
+
+                error_log('[rc_webhook] NON_RENEWING_PURCHASE activado plan=' . $planCode . ' source=' . $source . ' sub=' . $ltSubId);
+                break;
+            }
+
+            // ── Evento de test de RC al configurar el webhook ─────────
+            case 'TEST': {
+                error_log('[rc_webhook] TEST event recibido — no-op (webhook configurado correctamente)');
+                break;
+            }
+
+            // ── Cualquier tipo nuevo que RC añada en el futuro ────────
+            default: {
+                error_log('[rc_webhook] type no manejado: ' . $type . ' — no-op');
+                break;
+            }
+        }
+    } catch (Throwable $e) {
+        // Error de procesamiento: loguear pero devolver 200 para que RC no reintente
+        // indefinidamente. El operador revisará error_log.
+        error_log('[rc_webhook] error de procesamiento type=' . $type . ' user=' . $userId . ': ' . $e->getMessage());
+    }
+
+    return jsonResponse($response, ['ok' => true]);
+});
 
 // ================= ERRORS =================
 // displayErrorDetails=false en producción: no exponer stack/SQL al cliente.

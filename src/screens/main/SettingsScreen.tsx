@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
-import { View, ScrollView, Pressable, StyleSheet, Share, Platform } from 'react-native';
+import { View, ScrollView, Pressable, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useAuthStore } from '../../store/useAuthStore';
-import { useDataStore } from '../../store/useDataStore';
 import { useOnboardingStore } from '../../store/useOnboardingStore';
 import { useBilling } from '../../store/useBillingStore';
 import { useSecurityStore } from '../../store/useSecurityStore';
+import { useDataStore } from '../../store/useDataStore';
 import { SecuritySetupSheet } from '../modals/SecuritySetupSheet';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing } from '../../theme/spacing';
@@ -19,16 +19,21 @@ import { Input } from '../../components/Input';
 import { Sheet } from '../../components/Sheet';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { useToast } from '../../components/Toast';
-import { authApi } from '../../api/endpoints';
+import { authApi, transactionsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { confirm } from '../../utils/confirm';
 import { validateName, validatePassword } from '../../utils/validators';
+import { buildExportHtml } from '../../utils/exportHtml';
+
+// Las libs nativas de file system / sharing / print no se importan directamente
+// en el módulo para no romper el bundler web. Se cargan de forma dinámica dentro
+// de las funciones que sólo se ejecutan en plataformas nativas.
+// En web usamos APIs DOM estándar (Blob, URL.createObjectURL, Print.printAsync).
 
 export const SettingsScreen: React.FC = () => {
   const { palette, preference, setPreference } = useTheme();
   const navigation = useNavigation<any>();
   const { user, logout, setUser } = useAuthStore();
-  const store = useDataStore();
   const billing = useBilling();
   const security = useSecurityStore();
   const toast = useToast();
@@ -50,7 +55,10 @@ export const SettingsScreen: React.FC = () => {
   const [confirmPwd, setConfirmPwd] = useState('');
   const [savingPwd, setSavingPwd] = useState(false);
 
-  const [exporting, setExporting] = useState(false);
+  // Export sheet
+  const [exportSheetOpen, setExportSheetOpen] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const onCurrencyChange = async (currency: 'EUR' | 'USD' | 'GBP') => {
     try {
@@ -99,43 +107,109 @@ export const SettingsScreen: React.FC = () => {
     }
   };
 
-  const onExport = async () => {
+  // ──────────────────────────────────────────────────────────────
+  // CSV Export
+  // ──────────────────────────────────────────────────────────────
+  const onExportCsv = async () => {
     if (!billing.hasFeature('export')) {
+      setExportSheetOpen(false);
       navigation.navigate('Paywall', { feature: 'export' });
       return;
     }
-    setExporting(true);
+    setExportingCsv(true);
     try {
-      // Aseguramos que tenemos datos recientes
-      await store.refreshAll(true);
-      const snap = useDataStore.getState();
-      const payload = {
-        exported_at: new Date().toISOString(),
-        user: { name: user?.name, email: user?.email, currency: user?.currency },
-        transactions: snap.transactions,
-        recurring: snap.recurring,
-        goals: snap.goals,
-        budgets: snap.budgets,
-        categories: snap.categories,
-      };
-      const json = JSON.stringify(payload, null, 2);
+      const csv = await transactionsApi.exportCsv();
+      const filename = `chillpocket-${new Date().toISOString().slice(0, 10)}.csv`;
+
       if (Platform.OS === 'web') {
-        // Descarga directa
-        const blob = new Blob([json], { type: 'application/json' });
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `chillpocket-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
         toast.success('Descarga iniciada');
+        setExportSheetOpen(false);
       } else {
-        await Share.share({ message: json, title: 'Backup ChillPocket' });
+        // Nativo: escribir archivo real + share sheet.
+        // Usamos expo-file-system/legacy (API estable en SDK 54 / v19).
+        // El import dinámico es necesario para que Metro no intente
+        // resolver el módulo nativo al compilar la versión web.
+        const FileSystem = await import('expo-file-system/legacy');
+        const Sharing = await import('expo-sharing');
+
+        const uri = (FileSystem.cacheDirectory ?? '') + filename;
+        await FileSystem.writeAsStringAsync(uri, csv, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+
+        const available = await Sharing.isAvailableAsync();
+        if (available) {
+          setExportSheetOpen(false);
+          await Sharing.shareAsync(uri, {
+            mimeType: 'text/csv',
+            dialogTitle: 'Exportar CSV',
+            UTI: 'public.comma-separated-values-text',
+          });
+          toast.success('Exportacion lista');
+        } else {
+          toast.error('Compartir no esta disponible en este dispositivo');
+        }
       }
     } catch (e) {
-      toast.error(apiError(e, 'No se pudo exportar'));
+      toast.error(apiError(e, 'No se pudo exportar el CSV'));
     } finally {
-      setExporting(false);
+      setExportingCsv(false);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────
+  // PDF Export
+  // ──────────────────────────────────────────────────────────────
+  const onExportPdf = async () => {
+    if (!billing.hasFeature('export')) {
+      setExportSheetOpen(false);
+      navigation.navigate('Paywall', { feature: 'export' });
+      return;
+    }
+    setExportingPdf(true);
+    try {
+      // Refrescamos datos para tener el snapshot más reciente.
+      await useDataStore.getState().refreshAll(true);
+
+      const { transactions, categories } = useDataStore.getState();
+      const html = buildExportHtml(transactions, categories, user ?? null);
+
+      if (Platform.OS === 'web') {
+        // En web printAsync abre el diálogo del navegador (Imprimir / Guardar PDF).
+        // El feedback visual es el propio diálogo del navegador.
+        const Print = await import('expo-print');
+        setExportSheetOpen(false);
+        await Print.printAsync({ html });
+      } else {
+        // Nativo: genera el PDF como archivo y abre el share sheet.
+        const Print = await import('expo-print');
+        const Sharing = await import('expo-sharing');
+
+        const { uri } = await Print.printToFileAsync({ html, base64: false });
+        setExportSheetOpen(false);
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Exportar PDF',
+          UTI: 'com.adobe.pdf',
+        });
+        toast.success('Exportacion lista');
+      }
+    } catch (e) {
+      // Si el usuario cancela el share sheet en iOS lanza un error silenciado:
+      // sólo notificamos si el error no es una cancelación.
+      const msg = e instanceof Error ? e.message : '';
+      if (!msg.includes('cancel') && !msg.includes('Cancel') && !msg.includes('dismiss')) {
+        toast.error(apiError(e, 'No se pudo exportar el PDF'));
+      }
+    } finally {
+      setExportingPdf(false);
     }
   };
 
@@ -226,17 +300,11 @@ export const SettingsScreen: React.FC = () => {
             <Pressable onPress={() => navigation.navigate('Categories')}>
               <RowAction icon="pricetags-outline" label="Categorías" />
             </Pressable>
-            <Pressable onPress={onExport} disabled={exporting}>
+            <Pressable onPress={() => setExportSheetOpen(true)}>
               <RowAction
                 icon="download-outline"
                 label="Exportar mis datos"
-                value={
-                  exporting
-                    ? 'Generando…'
-                    : billing.hasFeature('export')
-                    ? 'JSON'
-                    : 'Plus'
-                }
+                value={billing.hasFeature('export') ? 'CSV / PDF' : 'Plus'}
               />
             </Pressable>
             <Pressable onPress={() => { navigation.navigate('Tabs'); useOnboardingStore.getState().restart(); }}>
@@ -281,7 +349,7 @@ export const SettingsScreen: React.FC = () => {
           value={newPwd}
           onChangeText={setNewPwd}
           autoCapitalize="none"
-          helper="Mínimo 6 caracteres"
+          helper="Minimo 6 caracteres"
         />
         <Input
           label="Repetir nueva"
@@ -292,12 +360,78 @@ export const SettingsScreen: React.FC = () => {
         />
       </Sheet>
 
+      {/* Sheet de seleccion de formato de exportacion */}
+      <Sheet
+        visible={exportSheetOpen}
+        onClose={() => setExportSheetOpen(false)}
+        title="Exportar mis datos"
+      >
+        <ExportOption
+          icon="document-text-outline"
+          title="CSV"
+          description="Datos crudos para Excel, Google Sheets o tu gestor."
+          loading={exportingCsv}
+          disabled={exportingCsv || exportingPdf}
+          onPress={onExportCsv}
+        />
+        <ExportOption
+          icon="document-outline"
+          title="PDF"
+          description="Resumen visual con tabla, agrupado por mes. Para guardar o imprimir."
+          loading={exportingPdf}
+          disabled={exportingCsv || exportingPdf}
+          onPress={onExportPdf}
+        />
+      </Sheet>
+
       <SecuritySetupSheet
         visible={securitySheetOpen}
         mode={securityMode}
         onClose={() => setSecuritySheetOpen(false)}
       />
     </SafeAreaView>
+  );
+};
+
+// ──────────────────────────────────────────────────────────────
+// Sub-componentes locales
+// ──────────────────────────────────────────────────────────────
+
+const ExportOption: React.FC<{
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  description: string;
+  loading: boolean;
+  disabled: boolean;
+  onPress: () => void;
+}> = ({ icon, title, description, loading, disabled, onPress }) => {
+  const { palette } = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [
+        styles.exportOption,
+        {
+          backgroundColor: palette.bgElevated,
+          borderColor: palette.borderSubtle,
+          opacity: disabled ? 0.6 : pressed ? 0.85 : 1,
+        },
+      ]}
+    >
+      <View style={[styles.exportIconWrap, { backgroundColor: palette.accentSoft }]}>
+        {loading ? (
+          <ActivityIndicator size="small" color={palette.accent} />
+        ) : (
+          <Ionicons name={icon} size={22} color={palette.accent} />
+        )}
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text variant="body" weight="semibold">{title}</Text>
+        <Text variant="caption" tone="secondary">{description}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={palette.textMuted} />
+    </Pressable>
   );
 };
 
@@ -347,4 +481,19 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   iconWrap: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   kv: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'space-between' },
+  exportOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  exportIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

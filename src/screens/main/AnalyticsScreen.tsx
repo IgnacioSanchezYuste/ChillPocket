@@ -14,6 +14,8 @@ import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ProgressBar } from '../../components/ProgressBar';
 import { EmptyState } from '../../components/EmptyState';
+import { ErrorState } from '../../components/ErrorState';
+import { Skeleton, SkeletonChart } from '../../components/Skeleton';
 import { SpendingHabits } from '../../components/SpendingHabits';
 import { DonutChart } from '../../components/DonutChart';
 import { Sparkline } from '../../components/Sparkline';
@@ -50,6 +52,8 @@ export const AnalyticsScreen: React.FC = () => {
     projection,
     budgets,
     analyticsMonth,
+    analyticsLoading,
+    analyticsError,
     fetchAnalytics,
     fetchBudgets,
   } = useDataStore();
@@ -171,6 +175,25 @@ export const AnalyticsScreen: React.FC = () => {
   }, [budgets, palette.accent]);
 
   const projNet = projection?.projected_monthly_net ?? 0;
+
+  // Sin datos cargados todavía: mostrar skeleton de la estructura de la pantalla.
+  const hasAnalyticsData = summary !== null || monthly.length > 0 || categoryStats.length > 0;
+  if (analyticsLoading && !hasAnalyticsData) {
+    return <AnalyticsSkeleton />;
+  }
+
+  // Error de red sin datos previos: cartel con botón Reintentar.
+  if (analyticsError && !hasAnalyticsData) {
+    return (
+      <View style={{ flex: 1, backgroundColor: palette.bgBase, justifyContent: 'center' }}>
+        <ErrorState
+          title="No pudimos cargar tu analítica"
+          description={analyticsError}
+          onRetry={() => { fetchAnalytics(undefined, true); fetchBudgets(undefined, true); }}
+        />
+      </View>
+    );
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.bgBase }}>
@@ -374,8 +397,11 @@ export const AnalyticsScreen: React.FC = () => {
               </LinearGradient>
             )}
 
-            {/* Comparativa mensual + Ingresos vs gastos (2 columnas en desktop) */}
-            {monthlyData.labels.length > 1 && (
+            {/* Comparativa mensual + Ingresos vs gastos (2 columnas en desktop) — feature Plus */}
+            {!canAdvanced && monthlyData.labels.length > 1 && (
+              <PremiumLock label="Comparativa mensual" feature="advanced_analytics" />
+            )}
+            {canAdvanced && monthlyData.labels.length > 1 && (
             <View style={isLg ? { flexDirection: 'row', gap: spacing.lg, alignItems: 'flex-start' } : { gap: spacing.md }}>
               <View style={isLg ? { flex: 1 } : undefined}>
               <Card padding="md">
@@ -442,8 +468,11 @@ export const AnalyticsScreen: React.FC = () => {
             </View>
             )}
 
-            {/* Hábitos de gasto */}
-            {daily.length > 0 && (
+            {/* Hábitos de gasto — feature Plus */}
+            {!canAdvanced && daily.length > 0 && (
+              <PremiumLock label="Hábitos de gasto" feature="advanced_analytics" />
+            )}
+            {canAdvanced && daily.length > 0 && (
               <SpendingHabits
                 monthYear={summary?.month_year || currentMonthYear()}
                 daily={daily}
@@ -454,7 +483,13 @@ export const AnalyticsScreen: React.FC = () => {
 
             {/* Por tipo de pago + Presupuestos (2 columnas en desktop) */}
             <View style={pmBudgetsRow ? { flexDirection: 'row', gap: spacing.lg, alignItems: 'flex-start' } : { gap: spacing.md }}>
-            {paymentMethodStats.length > 0 && (
+            {/* Métodos de pago detallados — feature Plus */}
+            {!canAdvanced && paymentMethodStats.length > 0 && (
+              <View style={pmBudgetsRow ? { flex: 1 } : undefined}>
+                <PremiumLock label="Métodos de pago detallados" feature="advanced_analytics" />
+              </View>
+            )}
+            {canAdvanced && paymentMethodStats.length > 0 && (
               <View style={pmBudgetsRow ? { flex: 1 } : undefined}>
               <Card>
                 <Text variant="h2">Por tipo de pago</Text>
@@ -635,6 +670,37 @@ const ProjectionCell: React.FC<{ label: string; value: number; currency: string;
       <Text variant="h2" tabular weight="semibold" tone={value >= 0 ? 'primary' : 'danger'}>
         {formatMoney(value, currency)}
       </Text>
+    </View>
+  );
+};
+
+// Skeleton que aproxima el layout de Analítica durante la primera carga.
+const AnalyticsSkeleton: React.FC = () => {
+  const { palette } = useTheme();
+  return (
+    <View style={{ flex: 1, backgroundColor: palette.bgBase }}>
+      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl }} showsVerticalScrollIndicator={false}>
+          {/* Header */}
+          <View style={{ paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.md, gap: spacing.sm }}>
+            <Skeleton width={120} height={28} borderRadius={8} />
+            <Skeleton width={100} height={18} borderRadius={6} />
+          </View>
+          <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+            {/* KPI cards */}
+            <View style={{ flexDirection: 'row', gap: spacing.md }}>
+              <Skeleton height={120} style={{ flex: 1 }} borderRadius={radius.xl} />
+              <Skeleton height={120} style={{ flex: 1 }} borderRadius={radius.xl} />
+            </View>
+            {/* Donut card */}
+            <Skeleton height={220} borderRadius={radius.xl} />
+            {/* Comparativa mensual */}
+            <SkeletonChart height={200} />
+            {/* Ingresos vs gastos */}
+            <SkeletonChart height={200} />
+          </View>
+        </ScrollView>
+      </SafeAreaView>
     </View>
   );
 };

@@ -8,7 +8,8 @@
       "Bash(grep -v '^$\\\\|^#')",
       "Bash(npm install *)",
       "Bash(npx eas *)",
-      "Bash(npx -y eas-cli@latest build -p android --profile development --non-interactive --no-wait)"
+      "Bash(npx -y eas-cli@latest build -p android --profile development --non-interactive --no-wait)",
+      "Bash(echo \"TSC: $?\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\nacho\\Documents\\DAM\\MiosProyectos\\ChillPocket"

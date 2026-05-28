@@ -14,6 +14,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { radius, spacing } from '../theme/spacing';
 import { Text } from './Text';
 import { formatMoney } from '../utils/format';
+import { useCountUp } from '../hooks/useCountUp';
 
 type Mode = 'month' | 'historical';
 
@@ -90,7 +91,19 @@ export const BalanceHero: React.FC<Props> = ({
     }),
   ).current;
 
-  const money = (v: number) => (hidden ? HIDDEN : formatMoney(v, currency));
+  // Count-up animado para los valores numéricos principales.
+  // Los hooks siempre corren (regla de hooks), pero cuando hidden=true
+  // `fmt` devuelve '••••••' sin usar el valor animado.
+  // Si el target cambia a mitad de animación, el rAF anterior se cancela
+  // automáticamente dentro del hook y arranca uno nuevo desde donde quedó.
+  const animatedBalance = useCountUp(balance, 700);
+  const animatedHistorical = useCountUp(historicalAmount, 700);
+  const animatedIncome = useCountUp(income, 500);
+  const animatedExpense = useCountUp(expense, 500);
+
+  // `fmt` recibe el valor ya animado (número); si hidden, muestra puntos.
+  const fmt = (animated: number) =>
+    hidden ? HIDDEN : formatMoney(animated, currency);
 
   const monthOpacity = fade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
   const histOpacity = fade.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
@@ -167,7 +180,7 @@ export const BalanceHero: React.FC<Props> = ({
 
           {/* Balance principal enorme */}
           <Text variant="display" tabular style={styles.balance}>
-            {money(balance)}
+            {fmt(animatedBalance)}
           </Text>
 
           {savedThisMonth !== 0 && (
@@ -175,7 +188,7 @@ export const BalanceHero: React.FC<Props> = ({
               <Ionicons name="flag" size={12} color={WHITE_70} />
               <Text variant="caption" style={{ color: WHITE_70 }}>
                 {savedThisMonth >= 0 ? 'Ahorrado este mes ' : 'Retirado este mes '}
-                {money(Math.abs(savedThisMonth))}
+                {hidden ? HIDDEN : formatMoney(Math.abs(savedThisMonth), currency)}
               </Text>
             </View>
           )}
@@ -185,7 +198,7 @@ export const BalanceHero: React.FC<Props> = ({
               icon="arrow-up"
               iconColor={MINT}
               label="Ingresos"
-              value={money(income)}
+              value={fmt(animatedIncome)}
               valueColor={MINT}
             />
             <View style={[styles.vDivider, { backgroundColor: WHITE_18 }]} />
@@ -193,7 +206,7 @@ export const BalanceHero: React.FC<Props> = ({
               icon="arrow-down"
               iconColor={PINK}
               label="Gastos"
-              value={money(expense)}
+              value={fmt(animatedExpense)}
               valueColor={PINK}
             />
             <View style={[styles.vDivider, { backgroundColor: WHITE_18 }]} />
@@ -243,7 +256,7 @@ export const BalanceHero: React.FC<Props> = ({
           </View>
 
           <Text variant="display" tabular style={styles.balance}>
-            {money(historicalAmount)}
+            {fmt(animatedHistorical)}
           </Text>
 
           <View style={styles.savedRow}>

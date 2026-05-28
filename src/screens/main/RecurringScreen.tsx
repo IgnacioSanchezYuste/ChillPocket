@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { View, ScrollView, StyleSheet, Pressable, RefreshControl, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { useTheme } from '../../theme/ThemeProvider';
-import { spacing } from '../../theme/spacing';
+import { spacing, radius } from '../../theme/spacing';
 import { Text } from '../../components/Text';
 import { Card } from '../../components/Card';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { EmptyState } from '../../components/EmptyState';
+import { ErrorState } from '../../components/ErrorState';
+import { Skeleton } from '../../components/Skeleton';
 import { CategoryBadge } from '../../components/CategoryBadge';
 import { FAB } from '../../components/FAB';
 import { RecurringSheet } from '../modals/RecurringSheet';
@@ -28,7 +29,13 @@ const FREQUENCY_LABEL: Record<Recurring['frequency'], string> = {
 export const RecurringScreen: React.FC = () => {
   const { palette } = useTheme();
   const { user } = useAuthStore();
-  const { recurring, recurringProjection, fetchRecurring } = useDataStore();
+  const {
+    recurring,
+    recurringProjection,
+    fetchRecurring,
+    recurringLoading,
+    recurringError,
+  } = useDataStore();
   const toast = useToast();
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -54,6 +61,39 @@ export const RecurringScreen: React.FC = () => {
   };
 
   const currency = user?.currency || 'EUR';
+
+  // Primera carga sin datos: skeleton de 4 filas de recurrente.
+  if (recurringLoading && recurring.length === 0) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
+        <ScreenHeader title="Gastos fijos" subtitle="Cargando…" showBack />
+        <RecurringSkeleton />
+      </SafeAreaView>
+    );
+  }
+
+  // Error de red sin datos previos: cartel con botón Reintentar.
+  if (recurringError && recurring.length === 0) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
+        <ScreenHeader title="Gastos fijos" showBack />
+        <View style={{ flex: 1, justifyContent: 'center' }}>
+          <ErrorState
+            title="No pudimos cargar tus gastos fijos"
+            description={recurringError}
+            onRetry={() => fetchRecurring(true)}
+          />
+        </View>
+        <FAB onPress={() => { setEditing(null); setSheetOpen(true); }} />
+        <RecurringSheet
+          visible={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          editing={editing}
+          onSaved={() => fetchRecurring()}
+        />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: palette.bgBase }} edges={['top']}>
@@ -101,6 +141,7 @@ export const RecurringScreen: React.FC = () => {
         )}
 
         <View style={{ paddingHorizontal: spacing.lg, marginTop: spacing.lg, gap: spacing.sm }}>
+          {/* Sin datos reales: empty state (usuario sin recurrentes creados) */}
           {recurring.length === 0 ? (
             <EmptyState
               icon="repeat-outline"
@@ -171,6 +212,25 @@ export const RecurringScreen: React.FC = () => {
   );
 };
 
+// Skeleton de 4 filas de recurrente para la primera carga.
+const RecurringSkeleton: React.FC = () => (
+  <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md, marginTop: spacing.md }}>
+    {/* Card de proyección mensual */}
+    <Skeleton height={100} borderRadius={radius.md} />
+    {/* 4 filas de recurrente */}
+    {[0, 1, 2, 3].map((i) => (
+      <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
+        <Skeleton width={38} height={38} borderRadius={radius.md} />
+        <View style={{ flex: 1, gap: 6 }}>
+          <Skeleton width="50%" height={14} />
+          <Skeleton width="35%" height={11} />
+        </View>
+        <Skeleton width={60} height={16} />
+      </View>
+    ))}
+  </View>
+);
+
 const styles = StyleSheet.create({
   projection: {
     flexDirection: 'row',
@@ -192,7 +252,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.md,
   },
-  dot: { width: 10, height: 10, borderRadius: 5 },
   toggleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -202,3 +261,4 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
   },
 });
+

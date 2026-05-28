@@ -86,6 +86,18 @@ export const transactionsApi = {
   update: (id: number, data: Partial<Transaction>) =>
     http.put(`/transactions/${id}`, data).then((r) => r.data),
   remove: (id: number) => http.delete(`/transactions/${id}`).then((r) => r.data),
+  /** Exporta las transacciones del usuario como CSV (texto crudo).
+   *  Backend devuelve text/csv con BOM UTF-8; el caller decide cómo entregarlo
+   *  (Blob+download en web, Share en nativo). Si el plan no incluye `export`,
+   *  el backend responde 403 plan_limit_reached y el interceptor abre Paywall. */
+  exportCsv: (filter?: { from?: string; to?: string }) =>
+    http
+      .get<string>('/transactions/export', {
+        params: { format: 'csv', ...(filter ?? {}) },
+        responseType: 'text',
+        transformResponse: [(d) => d], // evita que axios intente JSON.parse el CSV
+      })
+      .then((r) => r.data),
 };
 
 // -------- RECURRING --------
@@ -143,9 +155,9 @@ export const budgetsApi = {
     http
       .get<{ budgets: Budget[]; month_year: string }>('/budgets', { params: { month_year } })
       .then((r) => r.data.budgets),
-  upsert: (data: { amount: number; month_year: string; category_id?: number | null; reset_day?: number }) =>
+  upsert: (data: { amount: number; month_year: string; category_id?: number | null; reset_day?: number; auto_renew?: boolean | 0 | 1 }) =>
     http.post('/budgets', data).then((r) => r.data),
-  update: (id: number, data: { amount?: number; reset_day?: number }) =>
+  update: (id: number, data: { amount?: number; reset_day?: number; auto_renew?: boolean | 0 | 1 }) =>
     http.put(`/budgets/${id}`, data).then((r) => r.data),
   remove: (id: number) => http.delete(`/budgets/${id}`).then((r) => r.data),
 };

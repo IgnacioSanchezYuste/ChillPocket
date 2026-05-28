@@ -10,8 +10,8 @@ import { spacing, radius } from '../../theme/spacing';
 import { Text } from '../../components/Text';
 import { Input } from '../../components/Input';
 import { ScreenHeader } from '../../components/ScreenHeader';
-import { TransactionRow } from '../../components/TransactionRow';
-import { monthLabel } from '../../utils/format';
+import { SwipeableTransactionRow } from '../../components/SwipeableTransactionRow';
+import { monthLabel, todayISO } from '../../utils/format';
 import { CategoryChip } from '../../components/CategoryChip';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { EmptyState } from '../../components/EmptyState';
@@ -22,8 +22,10 @@ import { TransactionFiltersSheet, countActiveFilters, type AdvancedFilters } fro
 import { transactionsApi, type TransactionFilter } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { useToast } from '../../components/Toast';
+import { confirm } from '../../utils/confirm';
 import { filterByBalanceMode } from '../../utils/balanceMode';
 import type { Transaction } from '../../api/types';
+import type { TransactionPrefill } from '../modals/TransactionSheet';
 
 type TypeFilter = 'all' | 'expense' | 'income';
 const PAGE_SIZE = 50;
@@ -196,6 +198,49 @@ export const TransactionsScreen: React.FC = () => {
     return order.map((title) => ({ title, data: buckets.get(title)! }));
   }, [visibleItems]);
 
+  // Estado del prefill para duplicar (se limpia al cerrar el sheet).
+  const [duplicatePrefill, setDuplicatePrefill] = useState<TransactionPrefill | null>(null);
+
+  // --- Swipe actions ---
+
+  // Elimina una transacción tras confirmación y refresca la lista.
+  const handleDeleteTx = useCallback(async (id: number) => {
+    const ok = await confirm({
+      title: 'Eliminar movimiento',
+      message: '¿Seguro? Esta acción no se puede deshacer.',
+      destructive: true,
+      confirmLabel: 'Eliminar',
+    });
+    if (!ok) return;
+    try {
+      await transactionsApi.remove(id);
+      useDataStore.getState().refreshAll(true);
+      toast.success('Eliminado');
+      // Actualiza la lista local de forma optimista sin esperar el store.
+      setItems((prev) => prev.filter((t) => t.id !== id));
+    } catch (e) {
+      toast.error(apiError(e, 'No se pudo eliminar'));
+    }
+  }, [toast]);
+
+  // Abre el sheet de creación con los datos de la transacción original
+  // y fecha de hoy (duplicar = "esto mismo, otra vez hoy").
+  const handleDuplicateTx = useCallback((tx: Transaction) => {
+    const prefill: TransactionPrefill = {
+      amount: String(tx.amount),
+      description: tx.description,
+      type: tx.type,
+      paymentMethod: tx.payment_method ?? null,
+      category_id: tx.category_id,
+      notes: tx.notes,
+      date: todayISO(),
+      scope: tx.scope ?? 'month',
+    };
+    setEditing(null);
+    setDuplicatePrefill(prefill);
+    setSheetOpen(true);
+  }, []);
+
   const activeAdvanced = countActiveFilters(adv);
   const isFirstLoad = loading && items.length === 0;
   const subtitle = `${visibleItems.length} mov.${hasMore ? '+' : ''}${activeAdvanced > 0 ? ` · ${activeAdvanced} filtros` : ''}`;
@@ -306,13 +351,16 @@ export const TransactionsScreen: React.FC = () => {
         renderItem={({ item }) => (
           <View style={{ paddingHorizontal: spacing.lg, marginBottom: spacing.sm }}>
             <View style={[styles.card, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}>
-              <TransactionRow
-                tx={item}
+              <SwipeableTransactionRow
+                transaction={item}
                 currency={user?.currency || 'EUR'}
                 onPress={() => {
                   setEditing(item);
+                  setDuplicatePrefill(null);
                   setSheetOpen(true);
                 }}
+                onDelete={handleDeleteTx}
+                onDuplicate={handleDuplicateTx}
               />
             </View>
           </View>
@@ -339,8 +387,12 @@ export const TransactionsScreen: React.FC = () => {
 
       <TransactionSheet
         visible={sheetOpen}
-        onClose={() => setSheetOpen(false)}
+        onClose={() => {
+          setSheetOpen(false);
+          setDuplicatePrefill(null);
+        }}
         editing={editing}
+        prefill={duplicatePrefill}
         onSaved={loadFirstPage}
       />
 

@@ -87,6 +87,7 @@ export type Budget = {
   category_color: string | null;
   category_icon: string | null;
   spent: number;
+  auto_renew?: 0 | 1 | boolean;
 };
 
 export type AnalyticsSummary = {

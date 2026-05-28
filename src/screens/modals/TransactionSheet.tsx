@@ -25,6 +25,14 @@ export type TransactionPrefill = {
   type?: 'expense' | 'income';
   paymentMethod?: PaymentMethod | null;
   categoryName?: string;
+  /** ID directo de categoría (tiene prioridad sobre categoryName). Usado al duplicar. */
+  category_id?: number | null;
+  /** Notas a prerellenar. Usado al duplicar. */
+  notes?: string | null;
+  /** Fecha ISO YYYY-MM-DD. Si se omite, se usa hoy. Usado al duplicar. */
+  date?: string;
+  /** Scope del modelo dual. Si se omite, se usa 'month'. */
+  scope?: 'month' | 'historical';
 };
 
 type Props = {
@@ -74,16 +82,17 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
         setPaymentMethod(editing.payment_method ?? null);
         setScope(editing.scope ?? 'month');
       } else if (prefill) {
-        // Onboarding: formulario precargado con un ejemplo.
+        // Onboarding o duplicado: formulario precargado con datos de ejemplo o transacción original.
         const t = prefill.type ?? 'expense';
         setType(t);
         setAmount(prefill.amount ?? '');
         setDescription(prefill.description ?? '');
-        setCategoryId(null); // se resuelve por nombre en el efecto de categorías
-        setDate(todayISO());
-        setNotes('');
+        // category_id tiene prioridad; si no, se resuelve por nombre en el efecto de categorías.
+        setCategoryId(prefill.category_id !== undefined ? (prefill.category_id ?? null) : null);
+        setDate(prefill.date ?? todayISO());
+        setNotes(prefill.notes ?? '');
         setPaymentMethod(prefill.paymentMethod ?? null);
-        setScope('month');
+        setScope(prefill.scope ?? 'month');
       } else {
         // Nueva transacción: pre-rellenar con las últimas elecciones del usuario.
         const initialType: 'expense' | 'income' = 'expense';
@@ -108,8 +117,15 @@ export const TransactionSheet: React.FC<Props> = ({ visible, onClose, editing, o
   }, [type, visible, editing, lastCategoryId]);
 
   // Onboarding: resolver la categoría del ejemplo por su nombre cuando carguen.
+  // Solo aplica si se pasó categoryName y no se pasó category_id directo.
   useEffect(() => {
-    if (visible && !editing && prefill?.categoryName && categories.length > 0) {
+    if (
+      visible &&
+      !editing &&
+      prefill?.categoryName &&
+      prefill?.category_id === undefined &&
+      categories.length > 0
+    ) {
       const wanted = prefill.categoryName.toLowerCase();
       const match = categories.find(
         (c) => c.type === (prefill.type ?? 'expense') && c.name.toLowerCase() === wanted
