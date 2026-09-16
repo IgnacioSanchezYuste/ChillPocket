@@ -9,9 +9,9 @@
 export const REMINDERS = {
   enabled: true,
   /** Horas locales (HH:MM) de aviso cada día sin abrir la app. */
-  times: ['20:00'],
+  times: ['20:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','21:00','22:00',],
   /** Días programados por adelantado. iOS solo guarda 64 avisos: se recorta solo. */
-  days: 14,
+  days: 64,
   /** Se van alternando por orden. */
   messages: [
     { title: '¿Qué tal el día? 💸', body: 'Apunta tus gastos de hoy en 10 segundos.' },
