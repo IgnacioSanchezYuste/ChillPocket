@@ -1,15 +1,26 @@
 # ChillPocket — API backend (Slim 4, `backend/index.php`)
 
-> Contratos exactos en `src/api/endpoints.ts` (cliente) y handlers en `backend/index.php`.
-> Todas las rutas protegidas requieren cabecera `Authorization: Bearer <JWT>`. El JWT lo emite el backend
-> (firebase/php-jwt, expiración **7 días**). Respuestas JSON. Errores: `{ error: true, message }` + status HTTP.
+> Contratos del cliente en `src/api/endpoints.ts` + `src/api/types.ts`; handlers en `backend/index.php` (~3.500 líneas).
+> Para localizar un handler sin leer el fichero entero: `grep -n "\->get('/ruta'" backend/index.php`
+> (cambia `get` por `post`/`put`/`delete`/`patch`). Helpers: `grep -n "^function " backend/index.php`.
+>
+> Rutas protegidas: cabecera `Authorization: Bearer <JWT>` (firebase/php-jwt, 7 días). Respuestas JSON.
+> Errores: `{ error: true, message }` + status HTTP. Límite de plan: **403** `{ error, code:'plan_limit_reached',
+> entity, limit, current, plan }` → el cliente abre el Paywall (`src/api/http.ts`).
 
-## Auth (públicas)
+## Auth (públicas, con rate limiting)
+Rate limiting: **5 intentos fallidos / 15 min** por bucket `ip:<ip>` **y** `email:<email>` (tabla
+`auth_attempts`, limpieza oportunista > 7 días). Superado → **429**. Helpers: `checkAuthRateLimit`,
+`recordAuthFailure`, `clearAuthAttempts`, `rateLimitedResponse`.
+
 | Método | Ruta | Body | Respuesta | Notas |
 |---|---|---|---|---|
-| POST | `/auth/register` | `{name,email,password,currency?}` | `{success,token,user}` | Crea usuario (bcrypt). |
+| POST | `/auth/register` | `{name,email,password,currency?}` | `{success,token,user}` | bcrypt. |
 | POST | `/auth/login` | `{email,password}` | `{success,token,user}` | |
-| POST | `/auth/google` | `{id_token}` | `{success,token,user,is_new}` | Verifica id_token con el endpoint `tokeninfo` de Google contra los client IDs permitidos (web+android). Busca por `google_sub`, si no por email (enlaza), si no crea. **`is_new=true`** cuando crea → el front lanza el onboarding. |
+| POST | `/auth/google` | `{id_token}` | `{success,token,user,is_new}` | Verifica con `tokeninfo` contra `GOOGLE_ALLOWED_CLIENT_IDS`. Busca por `google_sub`, si no por email (enlaza), si no crea. `is_new=true` → el front lanza el onboarding. |
+
+`user` siempre lleva el plan inyectado por `attachEntitlement()`: `plan_code, plan_name, limits, features,
+is_premium, is_web_allowed`.
 
 ## Perfil (protegidas)
 | Método | Ruta | Body | Respuesta |
@@ -18,80 +29,91 @@
 | PUT | `/me` | `{name?,currency?,timezone?,theme?,avatar_url?}` | `{success,user}` |
 | PUT | `/me/password` | `{current_password,new_password}` | `{success}` |
 
+> ⚠️ **Bug conocido**: `PUT /me` **no** acepta `income_reference`, `income_payday` ni `savings_goal_monthly`, y
+> ningún otro endpoint los escribe. El onboarding los guarda solo en local (`usePreferencesStore`). Consecuencia:
+> en el servidor el periodo financiero es siempre el mes natural y `savings_goal_stats.goal` es siempre `null`.
+> Ver ROADMAP → Calidad / deuda técnica.
+
 ## Categorías (protegidas)
 | Método | Ruta | Body / Query | Notas |
 |---|---|---|---|
-| GET | `/categories` | `?type=expense\|income` | Incluye categorías del sistema (`user_id NULL`) + las del usuario. |
-| POST | `/categories` | `{name,type,color?,icon?}` | Devuelve `{success,category}`. |
-| PUT | `/categories/{id}` | `Partial<Category>` | Solo categorías propias. |
-| DELETE | `/categories/{id}` | — | Solo propias; las del sistema no se borran. |
+| GET | `/categories` | `?type=expense\|income` | Sistema (`user_id NULL`) + propias. |
+| POST | `/categories` | `{name,type,color?,icon?}` | Límite de plan `custom_categories`. → `{success,category}` |
+| PUT | `/categories/{id}` | `Partial<Category>` | Solo propias. |
+| DELETE | `/categories/{id}` | — | Solo propias. |
 
 ## Transacciones (protegidas)
 | Método | Ruta | Body / Query |
 |---|---|---|
-| GET | `/transactions` | `?from,to,type,category_id,payment_method,search,limit,offset` → `{transactions}` |
-| POST | `/transactions` | `{amount,description,type,transaction_date,category_id?,payment_method?,notes?}` → `{success,transaction}` |
-| PUT | `/transactions/{id}` | `Partial<Transaction>` |
-| DELETE | `/transactions/{id}` | — Lee `receipt_path` y hace `unlink` del archivo si existía antes de borrar la fila. |
+| GET | `/transactions` | `?from,to,type,category_id,payment_method,search,amount_min,amount_max,limit,offset` → `{transactions}` (incluye `scope`, `receipt_path`). `from` pasa por `enforceHistoryLimit`. **No** filtra por `scope` (se hace en cliente). |
+| POST | `/transactions` | `{amount,description,type,transaction_date,category_id?,payment_method?,notes?,scope?}` → `{success,transaction}`. `scope` = `month` por defecto. |
+| PUT | `/transactions/{id}` | `Partial<Transaction>`. Cambiar `scope` de una tx con `goal_id` → **409**. |
+| DELETE | `/transactions/{id}` | Borra también el fichero de recibo si existe. |
+| GET | `/transactions/export` | `?format=csv` (obligatorio). Gate `features.export` (403 si no). CSV con BOM UTF-8, `fputcsv`, `Cache-Control: no-store`, tope 50.000 filas (`X-ChillPocket-Truncated: true`). Respeta `enforceHistoryLimit`. |
 
-## Recibos de transacciones (protegidas — **Plus only**)
+### Recibos (protegidas — solo Plus, feature `receipt_photos`)
 | Método | Ruta | Notas |
 |---|---|---|
-| `POST` | `/transactions/{id}/receipt` | Multipart campo `receipt`. Gate Plus server-side (`receipt_photos` feature). Valida: propiedad, magia de bytes (JPEG/PNG/WebP), ≤5MB, ≤4000×4000px. Re-encoda con GD (strip EXIF). Nombre aleatorio server-side. Reemplaza el anterior si existía. → `{success, receipt_url}` o 403/404/413/415/400/500. |
-| `DELETE` | `/transactions/{id}/receipt` | Propiedad → `unlink` + `receipt_path=NULL`. → `{success}`. |
-| `GET` | `/transactions/{id}/receipt` | Propiedad → stream JPEG con `Content-Type`, `X-Content-Type-Options: nosniff`, `Content-Disposition: inline`, `Cache-Control: private`. No accessible por URL directa (bloqueado por `Images/.htaccess`). |
+| POST | `/transactions/{id}/receipt` | Multipart, campo `receipt`. Propiedad + bytes mágicos (JPEG/PNG/WebP), ≤ 5 MB, ≤ 4000×4000 px y ≤ 24 MP; re-encode con GD (sin EXIF); nombre aleatorio; reemplaza el anterior. → `{success, receipt_url}` o 400/403/404/413/415/500. |
+| DELETE | `/transactions/{id}/receipt` | Propiedad → borra fichero + `receipt_path=NULL`. |
+| GET | `/transactions/{id}/receipt` | Propiedad → stream con `nosniff`, `inline`, `Cache-Control: private`. Los ficheros viven en `backend/Images/{user_id}/`, bloqueados por `Images/.htaccess`. |
 
 ## Recurrentes (protegidas)
 | Método | Ruta | Notas |
 |---|---|---|
-| GET | `/recurring` | `{recurring, projection}` (también dispara `expandRecurringTransactions`). |
-| POST | `/recurring` | `{name,amount,type,frequency,start_date,category_id?}` |
-| PUT | `/recurring/{id}` | actualizar |
-| PATCH **o** POST | `/recurring/{id}/toggle` | Activa/desactiva. Hay alias **POST** porque algunos proxys de hosting compartido bloquean PATCH. El cliente intenta PATCH y cae a POST. |
+| GET | `/recurring` | `{recurring, projection}`. |
+| POST | `/recurring` | `{name,amount,type,frequency,start_date,end_date?,category_id?}`. Límite de plan `recurring` (free = 3). El id se captura **antes** de expandir (bug de `lastInsertId` corregido). |
+| PUT | `/recurring/{id}` | Actualizar. |
+| PATCH **o** POST | `/recurring/{id}/toggle` | Alias POST porque algunos proxys bloquean PATCH; el cliente prueba PATCH y cae a POST. |
 | POST | `/recurring/run` | Fuerza la generación perezosa. |
-| DELETE | `/recurring/{id}` | Las transacciones ya generadas quedan (FK SET NULL). |
+| DELETE | `/recurring/{id}` | Las transacciones ya generadas quedan (FK `SET NULL`). |
 
 ## Metas de ahorro (protegidas) — modelo "sobre"
 | Método | Ruta | Notas |
 |---|---|---|
 | GET | `/savings-goals` | `{goals, available_balance}` |
-| POST | `/savings-goals` | `{name,target_amount,...}` |
+| POST | `/savings-goals` | `{name,target_amount,...}`. Límite de plan `goals`. |
 | PUT | `/savings-goals/{id}` | |
-| POST | `/savings-goals/{id}/contribute` | `{amount}` → `{success, goal, available_balance}`. **Valida saldo disponible**; crea una transacción de gasto en categoría "Ahorro" con `goal_id`. |
+| POST | `/savings-goals/{id}/contribute` | `{amount, scope?}` → `{success, goal, available_balance}`. Importe negativo = retirada. Valida contra `currentPeriodAvailable()` (scope `month`) o `historicalAvailable()` (scope `historical`). Crea un gasto en la categoría "Ahorro" con `goal_id` y ese `scope`. |
 | DELETE | `/savings-goals/{id}` | |
 
 ## Presupuestos (protegidas)
 | Método | Ruta | Notas |
 |---|---|---|
-| GET | `/budgets` | `?month_year` → `{budgets, month_year}` (incluye `spent` calculado). |
-| POST | `/budgets` | `{amount, month_year, category_id?, reset_day?}` (**upsert**). |
-| PUT | `/budgets/{id}` | `{amount?, reset_day?}` |
+| GET | `/budgets` | `?month_year` → `{budgets, month_year}` con `spent`. Antes ejecuta `autoRenewBudgets()` (clona los `auto_renew=1` del mes anterior). |
+| POST | `/budgets` | `{amount, month_year, category_id?, reset_day?, auto_renew?}` (**upsert**). Límite de plan `budgets` por mes. |
+| PUT | `/budgets/{id}` | `{amount?, reset_day?, auto_renew?}` |
 | DELETE | `/budgets/{id}` | |
 
 ## Analítica (protegidas)
 | Método | Ruta | Notas |
 |---|---|---|
-| GET | `/analytics/all` | **PREFERIDO.** `?month_year,months,days` → bundle: `summary, monthly, categories, category_comparison, payment_methods, trends, projection, daily`. **1 sola petición** = ahorra conexiones MySQL. El front (`useDataStore.fetchAnalytics`) usa este. **Fase 2 DualBalance**: `summary` ahora incluye `current_period_start: 'YYYY-MM-DD'` (inicio del periodo financiero del usuario) y `net_total_historical` se calcula como `SUM(monthly_closures.surplus)` + transacciones `scope='historical'` (excluye el periodo en curso). Retrocompatible: el resto del shape no cambia. **Fase 1 ReceiptsAndSavingsStats**: `summary` incluye además `savings_goal_stats: { goal, months_met, months_exceeded, current_streak, best_streak, total_saved, avg_monthly_surplus, pct_months_met, series[] }`. `goal=null/0` → campos de cumplimiento `null`; `met=null` en serie. 0 cierres → numéricos `null`, `series:[]`. +1 query SQL a `monthly_closures` + 1 query a `users.savings_goal_monthly` (dentro del mismo endpoint, 0 round-trips extra al cliente). |
-| GET | `/analytics/summary` | `?month_year` → `AnalyticsSummary` (income, expense, balance, savings_ratio, net_total_historical, recurring_monthly, previous, saved_this_month...). **Ojo: mantiene la fórmula antigua de `net_total_historical` (deuda menor, sin caller activo en frontend)**. Usar `/analytics/all` para el cálculo nuevo. |
-| GET | `/analytics/monthly` | `?months` → `{monthly:[{month_year,income,expense}]}` |
-| GET | `/analytics/categories` | `?month_year` → `{categories:[CategoryStat]}` |
-| GET | `/analytics/category-comparison` | `?months` → `{rows}` (por mes y categoría; alimenta el carrusel). |
-| GET | `/analytics/payment-methods` | `?month_year` → `{payment_methods}` |
-| GET | `/analytics/trends` | `?days` → `{trends:[{transaction_date,income,expense}]}` |
-| GET | `/analytics/projection` | `Projection` (medias 3 meses + recurrentes). |
+| GET | `/analytics/all` | **La que usa la app.** `?month_year,months,days` → `summary, monthly, categories, category_comparison, payment_methods, trends, projection, daily`. `month_year` pasa por `enforceHistoryLimit`. `summary` incluye `current_period_start`, `net_total_historical` (= `SUM(monthly_closures.surplus)` + tx `scope='historical'`, sin el periodo en curso) y `savings_goal_stats {goal, months_met, months_exceeded, current_streak, best_streak, total_saved, avg_monthly_surplus, pct_months_met, series[]}`. |
+| GET | `/analytics/summary` | Fórmula **antigua** de `net_total_historical`. Sin uso en la app. |
+| GET | `/analytics/monthly` · `/categories` · `/category-comparison` · `/payment-methods` · `/trends` · `/projection` | Endpoints sueltos por compatibilidad. En pantallas usa siempre `/analytics/all`. |
 
-> Los endpoints individuales se conservan por compatibilidad, pero **en pantallas usa siempre `/analytics/all`**.
+## Billing (pública, autenticada por secreto)
+| Método | Ruta | Notas |
+|---|---|---|
+| POST | `/billing/webhook/revenuecat` | `Authorization` comparado con `hash_equals` contra `REVENUECAT_WEBHOOK_AUTH` (constante en `Conexion.php` o env; si falta → 503). Idempotente por UNIQUE `(provider, external_id)` en `billing_events`. `INITIAL_PURCHASE/RENEWAL/PRODUCT_CHANGE/UNCANCELLATION` → activa; `EXPIRATION/REFUND/SUBSCRIPTION_PAUSED` → desactiva (nunca `early_adopter`/`manual`); `NON_RENEWING_PURCHASE` + `lifetime_plus` → `source='lifetime'`. |
 
-## Middleware lazy (corre en `requireAuth` antes de cada handler protegido)
+## Middleware `requireAuth` (antes de cada handler protegido)
+Si alguno falla, se registra en `error_log` y la petición continúa.
+- `expandRecurringTransactions($conn, $userId)`: genera las transacciones de recurrentes activos hasta hoy.
+  Idempotente por UNIQUE `(user_id, recurring_id, transaction_date)`.
+- `closeFinancialPeriods($conn, $userId)`: cierra periodos pasados sin fila en `monthly_closures`
+  (**máx. 24 por petición**). Comparte caché con `currentPeriodStart()` (`$_paydayCache`, `$_periodStartCache`).
 
-Estos helpers se ejecutan automáticamente en cada request autenticada. Si fallan, se loguean en `error_log` y la request continúa (no rompen la API).
+## Mapa de helpers
+| Área | Funciones |
+|---|---|
+| Respuesta / auth | `jsonResponse`, `authenticate`, `fetchUser`, `tokenForUser`, `requireAuth`, `verifyGoogleIdToken`, `httpGetRaw` |
+| Validación | `validHexColor`, `validDate`, `validMonthYear`, `validPaymentMethod`, `validScope`, `userCanUseCategory`, `userOwnsCategory` |
+| Saldos | `availableBalance`, `currentPeriodAvailable`, `historicalAvailable`, `monthlyEquivalent`, `savingsCategoryId` |
+| Planes | `getUserEntitlements`, `attachEntitlement`, `planCount`, `enforcePlanLimit`, `enforceHistoryLimit`, `rcProductToPlanCode` |
+| Periodos / recurrentes | `getUserPayday`, `currentPeriodStart`, `nextPeriodStart`, `closeFinancialPeriods`, `expandRecurringTransactions`, `nextRecurringDate`, `addMonthSafely`, `autoRenewBudgets` |
 
-- `expandRecurringTransactions($conn, $userId)` — Genera las transacciones que tocan de los recurrentes activos del usuario hasta hoy. Idempotente vía `UNIQUE (user_id, recurring_id, transaction_date)`.
-- `closeFinancialPeriods($conn, $userId)` (Fase 2 DualBalance) — Cierra los periodos financieros pasados que aún no tengan fila en `monthly_closures`. **Cap 24 cierres por request** (cuota Hostinger). Calcula `surplus = SUM(income) − SUM(expense)` de las transacciones con `scope='month'` dentro de cada periodo. Idempotente vía `UNIQUE (user_id, period_start)`. Comparte cache con `currentPeriodStart()` para no consultar `users.income_payday` dos veces (`$_paydayCache`, `$_periodStartCache`).
-
-## Auth, CORS y seguridad (resumen)
-- Middleware de grupo valida el `Bearer` JWT y mete `userId` en el request. Todas las consultas filtran por `user_id`.
-- CORS y preflight `OPTIONS` se resuelven a nivel Apache en `backend/.htaccess` (más el rewrite a `index.php`).
-- `ini_set('display_errors','0')` evita que warnings PHP contaminen el JSON (rompía el parse en el cliente).
-- Verificación de Google vía `tokeninfo` (con fallback cURL) contra `GOOGLE_ALLOWED_CLIENT_IDS`.
-- Detalle ampliado y amenazas en el rol **cybersecurity-engineer**.
+## Seguridad (resumen)
+- CORS y preflight `OPTIONS` en `backend/.htaccess` (hoy `*`; pasar a lista de orígenes cuando haya web pública).
+- `ini_set('display_errors','0')` para que los warnings no rompan el JSON.
+- Revisión detallada: agente `cybersecurity-engineer`.

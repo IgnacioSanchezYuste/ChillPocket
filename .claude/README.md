@@ -1,57 +1,61 @@
-# Equipo full-stack de ChillPocket (sistema de agentes de Claude)
+# Sistema de agentes de ChillPocket
 
-Este directorio convierte a Claude Code en un **equipo de ingeniería senior** que trabaja sobre ChillPocket.
-Tú eres el jefe: le dices un objetivo y el **Project Master** lo organiza y pone a trabajar a los especialistas.
+Este directorio configura Claude Code para trabajar sobre ChillPocket. Las instrucciones que se cargan en cada
+sesión están en `../CLAUDE.md`; las reglas, en `knowledge/conventions.md`.
 
-## Cómo funciona (modelo mental)
+## Modelo
 ```
-            TÚ (jefe)
-               │  "quiero X"
-               ▼
-     ┌─────────────────────┐
-     │   PROJECT MASTER     │  planifica · descompone · delega · integra · verifica · reporta
-     └─────────┬───────────┘
-    ┌───────┬───┴────┬─────────┬───────────────┬───────────────┐
-    ▼       ▼        ▼         ▼               ▼               ▼
- backend frontend  ui      qa-tester   cybersecurity     marketing
- engineer engineer designer            engineer           expert
+                 TÚ (jefe)
+                    │ "quiero X"
+                    ▼
+     ┌───────────────────────────────┐
+     │  SESIÓN PRINCIPAL (Claude)    │  entiende · planifica · IMPLEMENTA · verifica · reporta
+     └──────────────┬────────────────┘
+        solo cuando aporta │
+     ┌──────────────┬──────┴───────┬───────────────────┐
+     ▼              ▼              ▼                   ▼
+  paralelo       revisión       criterio            búsqueda
+  backend-eng.   cybersecurity  marketing-expert    Explore
+  frontend-eng.  qa-tester      ui-designer         (integrado)
 ```
+- La sesión principal tiene todo el contexto de la conversación, así que implementa ella.
+- Cada subagente empieza de cero: solo compensa si trabaja **en paralelo**, si su **mirada independiente** es el
+  valor (seguridad, QA) o si aporta un **criterio especializado** (marketing, diseño).
+- Un subagente no puede lanzar otros subagentes; por eso ya no hay un agente "project-master".
 
-- El **hilo principal de Claude** actúa como Project Master (lo fija `CLAUDE.md`, que Claude carga solo).
-- Para tareas no triviales, descompone el trabajo y **delega** en los subagentes especialistas
-  (`.claude/agents/*.md`) con la herramienta de tareas/Agent.
-- Para tareas triviales, lo resuelve directo sin burocracia.
-
-## El equipo (`.claude/agents/`)
-| Agente | Rol | Cuándo |
+## Equipo (`agents/`)
+| Agente | Modelo | Cuándo |
 |---|---|---|
-| `project-master` | Líder técnico / orquestador | Cualquier petición multi-capa; planificar y coordinar. |
-| `backend-engineer` | API PHP/Slim, MySQL, JWT, negocio | Endpoints, SQL, migraciones, auth de servidor. |
-| `frontend-engineer` | React Native/Expo, stores, API | Pantallas, navegación, estado, integración. |
-| `ui-designer` | Diseño visual / design system | Estética premium, layouts, claro/oscuro, microinteracciones. |
-| `marketing-expert` | Marketing / growth | Posicionamiento, ASO, copy, onboarding, pricing, campañas, research. |
-| `qa-tester` | QA / pruebas | Casos de prueba, repro de bugs, aceptación, regresiones. |
-| `cybersecurity-engineer` | AppSec (defensivo) | Auth, autorización, validación, secretos, CORS, SQLi/XSS. |
+| `backend-engineer` | el de la sesión | Backend en paralelo, con el contrato cerrado. |
+| `frontend-engineer` | el de la sesión | Frontend en paralelo, con el contrato cerrado. |
+| `ui-designer` | sonnet | Rediseños, opciones de layout, consistencia visual. |
+| `qa-tester` | opus | Revisión final de cambios de dinero, periodos, metas, planes; tests de Jest. |
+| `cybersecurity-engineer` | opus | Revisión obligatoria de auth, SQL, CORS, ficheros, webhooks y secretos. |
+| `marketing-expert` | sonnet | Copy, onboarding, paywall, pricing, ASO, retención. |
 
-## Conocimiento compartido (`.claude/knowledge/`)
-Todos los agentes leen esto antes de trabajar — es la fuente de verdad de "cómo funciona la app entera":
-- `app-overview.md` — qué es, stack, estructura, cómo ejecutar, restricciones clave.
-- `data-model.md` — tablas, relaciones, modelo "sobre" de metas, reglas numéricas.
-- `backend-api.md` — **cada endpoint**: método, ruta, auth, params, respuesta.
-- `frontend-map.md` — pantallas, navegación, stores, componentes, tema, onboarding.
-- `conventions.md` — estilo, rendimiento/red, git, seguridad mínima, Definition of Done.
+## Piezas
+| Ruta | Qué es |
+|---|---|
+| `knowledge/` | Documentación viva de la app. Se actualiza en el mismo cambio que el código. |
+| `Tareas/` | Planes de features largas con handoff entre sesiones. `TareaSiguiente.md` es la plantilla. |
+| `hooks/` | Comprobaciones automáticas (ver tabla en `knowledge/conventions.md`). |
+| `settings.json` | Permisos compartidos, reglas `deny` sobre secretos y registro de hooks. |
+| `settings.local.json` | Permisos personales de cada máquina (no se versiona). |
 
-> Mantén estos documentos vivos: si cambias el esquema, un endpoint o el design system, actualízalos.
+## Flujo de trabajo del jefe
+1. **Tarea pequeña**: pídela en una frase. Revisa el resumen y lo que haya que desplegar.
+2. **Feature grande**:
+   1. Escribe la idea en `Tareas/TareaSiguiente.md` (o pídeselo a Claude).
+   2. En una sesión: *"Lee TareaSiguiente.md, plantéalo con el equipo y cierra las decisiones conmigo"*.
+      Sale un `Tareas/<Feature>.md` con fases.
+   3. Por cada fase: *"Implementa la fase N de `<Feature>.md`"*. Al acabar, Claude marca la fase y escribe el handoff.
+   4. Despliega lo indicado (SQL → FTP → EAS) y confirma a Claude qué está en producción.
+   5. Si la conversación se hace larga, empieza una sesión nueva: con el `.md` de la tarea basta para seguir.
+3. **Antes de commitear**: `npm run check`. Pide el commit a Claude o hazlo tú; no se commitea solo.
+4. Revisa o desactiva hooks con `/hooks` y permisos con `/permissions`.
 
-## Uso al clonar en otro PC
-1. Abre Claude Code en la raíz del repo. `CLAUDE.md` se carga automáticamente y activa el rol de Project Master.
-2. Dile lo que quieres en lenguaje natural ("añade exportar a CSV", "el donut se ve mal en oscuro", "revisa la
-   seguridad del login"). Claude planifica y reparte entre el equipo.
-3. También puedes invocar a un especialista directamente: pídelo por su nombre (p.ej. "que el `ui-designer`
-   rediseñe la pantalla de metas") o usa `@`/el selector de agentes de tu cliente.
-
-## Reglas de oro (resumen)
-- `npx tsc --noEmit` siempre limpio. Cuidar **web y nativo**.
-- No multiplicar peticiones HTTP (Hostinger: 500 conexiones MySQL/hora). Usar `useDataStore` y `/analytics/all`.
-- Autorización por `user_id`, SQL parametrizado, sin secretos en logs, migraciones idempotentes.
-- Cambios destructivos/arquitectura: explicar **problema → solución → impacto** y confirmar.
+## Al clonar en otro PC
+1. `npm install`.
+2. Crear `.env` a partir de `.env.example` (Claude no puede leerlo ni escribirlo).
+3. Abrir Claude Code en la raíz. `CLAUDE.md`, agentes y hooks se cargan solos (los hooks necesitan `node`;
+   el lint de PHP usa `php` del PATH o `C:\xampp\php\php.exe`, y si no hay PHP simplemente no se ejecuta).

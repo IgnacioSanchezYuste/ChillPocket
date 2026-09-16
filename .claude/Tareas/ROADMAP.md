@@ -108,7 +108,8 @@ quedan en "Próximamente".
 
 ## 🧪 Calidad / deuda técnica (transversal a la v2)
 
-- **Tests automatizados** (Jest) empezando por utils puras: `format`, `validators`, `categoryIcon`, interés compuesto, lógica de `getUserEntitlements`.
+- 🐞 **BUG (prioridad alta) — día de cobro y objetivo de ahorro no llegan al servidor** — **S** · Backend sí. `PUT /me` no acepta `income_reference`, `income_payday` ni `savings_goal_monthly`, y el onboarding (`OnboardingHost.applyPersonalization`) solo envía nombre y moneda; esos datos viven únicamente en `usePreferencesStore`. Efectos: (1) `closeFinancialPeriods`/`current_period_start` usan siempre mes natural, así que el reinicio del saldo el día de cobro no ocurre en el servidor; (2) `InsightBanner` combina un inicio de periodo de mes natural con el payday local, y la ventana del presupuesto diario sale mal para quien cobra un día distinto del 1; (3) `savings_goal_stats.goal` llega siempre `null`, así que la sección "Meta de ahorro" no muestra meses cumplidos ni racha. Arreglo: aceptar y validar los tres campos en `PUT /me` (invalidando `$_paydayCache`), enviarlos desde el onboarding y desde Ajustes, y decidir qué hacer con los `monthly_closures` ya calculados con mes natural. Detectado el 2026-09-16.
+- ✅ **Tests automatizados** (Jest + `jest-expo`) — 2026-09-16: `financialPeriod` (extraído de `InsightBanner`), `balanceMode`, `validators`. Pendiente: `format`, `categoryIcon`, interés compuesto, `exportHtml`.
 - **Sincronizar el dump SQL** (`backend/u204231532_Finanzas.sql`) con el esquema real (`goal_id`, `google_sub`, `plans`, `user_entitlements`, `billing_events`, `auth_attempts`).
 - **CORS con allowlist** de orígenes en vez de `*` (cuando se publique la web).
 - **Mover `expandRecurringTransactions`** fuera del middleware genérico (solo en endpoints que lo necesitan) y fusionar queries de analítica para ahorrar conexiones MySQL.

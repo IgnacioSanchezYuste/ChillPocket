@@ -1,7 +1,7 @@
 # ChillPocket — Inventario funcional (qué hace la app HOY)
 
 > Fuente de verdad para decisiones de producto / marketing / billing. Solo lo
-> implementado y funcionando en la versión actual. Para lo que falta y queda
+> implementado y funcionando en la versión actual (revisado 2026-09-16). Para lo que falta y queda
 > en backlog, ver `ROADMAP.md`. Para detalles técnicos: `app-overview.md`,
 > `backend-api.md`, `data-model.md`, `frontend-map.md`.
 
@@ -15,7 +15,7 @@
 
 ## 2. Acceso, cuenta y seguridad
 - **Registro** con email + contraseña (mínimo 6 caracteres).
-- **Login con Google** (OAuth, vía RevenueCat-… *sic* `@react-native-google-signin` nativo + `expo-auth-session` web).
+- **Login con Google** (OAuth: `@react-native-google-signin` en nativo, `expo-auth-session` en web).
   Al primer login crea la cuenta y lanza el onboarding.
 - **Persistencia de sesión**: JWT de 7 días firmado por el backend.
 - **JWT en almacén seguro** (`expo-secure-store` → Keystore/Keychain). Antes vivía en AsyncStorage.
@@ -35,6 +35,10 @@
 - Iconos circulares con color por categoría en cada fila.
 - Marca visual si la transacción viene de un recurrente (icono `repeat`) o
   de una contribución a meta (icono `flag`).
+- **Destino** (`scope`): "Saldo del mes" (por defecto) o "Mis ahorros".
+- **Foto del recibo** (solo Plus): una por transacción, desde cámara o galería;
+  privada, servida solo por endpoint autenticado.
+- **Swipe** en la lista (nativo): duplicar o eliminar.
 
 ### 3.2 Pantalla "Movimientos"
 - **Lista paginada** (50 por página, scroll infinito) con loader y mensaje al final.
@@ -121,7 +125,8 @@ diseñada para no agotar la cuota MySQL de Hostinger).
 - Métricas: ingreso medio, gasto medio, neto mensual, proyección a 6 y 12 meses.
 
 ### 4.8 Insight banner (Home)
-- En el Dashboard, un banner accionable elige UNA frase útil:
+- En el Dashboard, un banner accionable elige UNA frase útil (prioridad en §10.7):
+  *"Hoy puedes gastar X € y seguir cumpliendo tu objetivo"*,
   *"Gastas un 12% más que el mes pasado"*,
   *"Llevas 3 días sin gastar 🔥"*,
   *"Has movido 200 € a tus metas este mes"*,
@@ -138,10 +143,11 @@ diseñada para no agotar la cuota MySQL de Hostinger).
 ## 6. Experiencia
 ### 6.1 Onboarding
 - **Spotlight tour** para nuevos usuarios (email + Google con `is_new=true`).
-- Welcome → personalización (5 pasos: nombre, moneda, objetivo, frecuencia de
-  ingresos, tema) → crear primer gasto (formulario precargado: 13,99 € · Ocio
-  · Cena) → crear gasto fijo (Netflix 12,99 €) → crear ingreso (Nómina 2.100 €)
-  → tour por las 4 pestañas → pantalla de éxito.
+- Welcome → personalización (nombre, moneda, objetivo, frecuencia e importe del
+  ingreso, día de cobro con selector tipo rueda, objetivo de ahorro, tema) →
+  crear primer gasto → crear gasto fijo (Netflix) → crear ingreso (Nómina) →
+  tour por las 4 pestañas → pantalla de éxito personalizada (detalle en §11).
+- Los datos de ejemplo se borran al terminar; la nómina se conserva como ingreso real.
 - Replay disponible en Ajustes ("Ver tutorial de nuevo").
 
 ### 6.2 Tema y diseño
@@ -160,9 +166,10 @@ diseñada para no agotar la cuota MySQL de Hostinger).
 - Formateo localizado (`Intl.NumberFormat('es-ES', {style:'currency', currency})`).
 
 ### 6.5 Exportar mis datos
-- En Ajustes → "Exportar mis datos" → descarga **JSON** completo (transacciones,
-  recurrentes, metas, presupuestos, categorías).
-- Solo plan Plus (feature `export`).
+- En Ajustes → "Exportar mis datos" → **CSV** (generado en el backend, BOM UTF-8
+  para Excel) o **PDF** (generado en el dispositivo con `expo-print`).
+- En nativo se comparte como archivo; en web se descarga.
+- Solo plan Plus (feature `export`, validada también en el servidor).
 
 ## 7. Estado actual del billing
 - Tablas `plans`, `user_entitlements`, `billing_events` (Fase 1).
@@ -170,11 +177,14 @@ diseñada para no agotar la cuota MySQL de Hostinger).
   **Aviso**: hoy solo `free` y `plus` corresponden a features reales.
 - Todos los usuarios anteriores a la migración recibieron `plus` con
   `source='early_adopter'` (de por vida, sin pago).
-- RevenueCat **conectado en código** (`expo-purchases`) y key de Android en
-  `eas.json`. Pendiente: producto + offering creados en Google Play y RC.
-- `PremiumLock` muestra badge "Plus" en features bloqueadas (export, forecast).
+- RevenueCat **conectado en código** (`react-native-purchases`) y key de Android en
+  `eas.json`. Webhook `/billing/webhook/revenuecat` implementado. Pendiente:
+  productos y offering en Google Play y RevenueCat.
+- `PremiumLock` en: exportar, forecast, hábitos, comparativa mensual, métodos de
+  pago, patrimonio, calculadora de inversiones y estadísticas avanzadas de ahorro.
 - Backend valida límites del plan en POST de presupuestos, metas, recurrentes,
-  categorías propias → 403 `plan_limit_reached` (el front abre Paywall solo).
+  categorías propias, historial > 3 meses, exportación y recibos
+  → 403 `plan_limit_reached` (el front abre el Paywall solo).
 
 ## 8. Plataformas y despliegue
 - **Android**: package `com.Ignacio.ChillPocket`, EAS build (preview/production).
@@ -194,21 +204,19 @@ Cualquier paywall debe respetar esta lista (no ofrecer lo que no existe):
 - ❌ **"Backup en la nube"** como diferencial: TODA la app guarda en nuestro
   backend. No es una feature premium, es la base del producto.
 - ❌ **Notificaciones push o locales**: ni recordatorios ni alertas.
-- ❌ **Exportar a CSV / PDF**: solo JSON.
+- ❌ **Sincronizar con el servidor el día de cobro y el objetivo de ahorro**
+  (bug): solo se guardan en el dispositivo, así que el servidor usa mes natural
+  y las estadísticas de "Meta de ahorro" salen vacías. Ver §10.8.
 - ❌ **Conexión bancaria automática** (PSD2 / Tink / Plaid).
 - ❌ **Importar extractos** CSV / OFX.
-- ❌ **Adjuntar foto / ticket a una transacción**.
-- ❌ **Patrimonio neto histórico** (gráfica).
 - ❌ **Etiquetas (tags) libres** en transacciones.
 - ❌ **Soporte real prioritario** (no hay canal definido aún).
 - ❌ **Familia con metas compartidas / presupuestos por miembro**.
 
-## 10. Modelo financiero · Saldo del mes + Mis ahorros (DISEÑADO, no implementado aún)
+## 10. Modelo financiero · Saldo del mes + Mis ahorros (implementado, Fases 1-4)
 
-> Esta sección documenta el cambio aprobado tras la consulta del equipo (frontend
-> + QA + producto) sobre `.claude/Tareas/TareaSiguiente.md`. Las decisiones están
-> cerradas; el código aún no está escrito. Cuando lo esté, este apartado pasa a
-> describir el comportamiento vigente y se elimina la nota de "DISEÑADO".
+> Decisiones cerradas en `.claude/Tareas/DualBalance.md`. La Fase 5 (analítica por
+> mes financiero) está aplazada a propósito.
 
 ### 10.1 Idea central
 La app deja de tener UN saldo agregado (`net_total_historical`) y pasa a tener
@@ -308,10 +316,13 @@ forman parte del paquete **Plus** (feature `advanced_analytics`).
 - `users.income_payday TINYINT NULL` — día del mes del cobro (1-31; null si variable).
 - `users.savings_goal_monthly DECIMAL(10,2) NULL` — objetivo de ahorro mensual.
 - Los recurrentes de ingreso siguen siendo la fuente real para `expandRecurringTransactions`
-  y el calendario de cobros. El `income_payday` se sincroniza con el recurrente
-  principal cuando existe.
+  y el calendario de cobros.
+- ⚠️ **Estado real (2026-09-16)**: las columnas existen, pero **ningún endpoint las
+  escribe** (`PUT /me` no las acepta y el onboarding solo las guarda en
+  `usePreferencesStore`). Mientras no se arregle, el servidor calcula periodos con
+  mes natural y `savings_goal_stats.goal` llega siempre `null`.
 
-## 11. Onboarding rediseñado (DISEÑADO, no implementado aún)
+## 11. Onboarding rediseñado (implementado en la Fase 1 de DualBalance)
 
 ### 11.1 Pasos del onboarding personalizado
 1. **Welcome** (igual que hoy).
@@ -370,6 +381,7 @@ replay como `skipCreationPhases: true`.
 - **Generación perezosa de recurrentes**: no hay cron; los recurrentes se materializan
   al entrar el usuario. Notificaciones tipo "te van a cobrar Netflix mañana" requieren
   un cron real o trabajar en cliente con notificaciones locales programadas.
-- **Backend mono-archivo**: `backend/index.php` ~2.000 líneas. Cualquier crecimiento
+- **Backend mono-archivo**: `backend/index.php` ~3.500 líneas. Cualquier crecimiento
   serio pedirá refactor (separar en módulos, fuera de scope inmediato).
-- **Sin tests automáticos**: cualquier cambio de regla de negocio se valida a mano.
+- **Tests**: Jest cubre la lógica pura del cliente (`src/utils/__tests__`). El backend
+  no tiene tests automáticos: cambios de reglas de negocio en PHP se validan a mano.
