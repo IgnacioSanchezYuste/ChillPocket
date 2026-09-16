@@ -13,7 +13,9 @@ import { LineChart } from 'react-native-chart-kit';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
+import { usePreferencesStore } from '../../store/usePreferencesStore';
 import { useTheme } from '../../theme/ThemeProvider';
+import { filterByBalanceMode } from '../../utils/balanceMode';
 import { spacing, radius } from '../../theme/spacing';
 import { useContentWidth, useBreakpoint } from '../../theme/layout';
 import { Text } from '../../components/Text';
@@ -22,13 +24,18 @@ import { KPICard } from '../../components/KPICard';
 import { BalanceHero } from '../../components/BalanceHero';
 import { InsightBanner } from '../../components/InsightBanner';
 import { BrandLogo } from '../../components/BrandLogo';
-import { TransactionRow } from '../../components/TransactionRow';
+import { SwipeableTransactionRow } from '../../components/SwipeableTransactionRow';
 import { FAB } from '../../components/FAB';
 import { SkeletonTransactionRow } from '../../components/Skeleton';
 import { MonthPickerModal } from '../../components/MonthPickerModal';
 import { TransactionSheet } from '../modals/TransactionSheet';
-import { monthLabel, currentMonthYear } from '../../utils/format';
+import { monthLabel, currentMonthYear, todayISO } from '../../utils/format';
+import { transactionsApi } from '../../api/endpoints';
+import { apiError } from '../../api/http';
+import { useToast } from '../../components/Toast';
+import { confirm } from '../../utils/confirm';
 import type { Transaction } from '../../api/types';
+import type { TransactionPrefill } from '../modals/TransactionSheet';
 
 type ChartMode = 'both' | 'income' | 'expense';
 
@@ -40,19 +47,26 @@ export const DashboardScreen: React.FC = () => {
     summary,
     trends,
     daily,
+    projection,
     transactions,
     transactionsLoading,
     transactionsLoadedAt,
     analyticsMonth,
+    balanceMode,
+    setBalanceMode,
     refreshAll,
     fetchAnalytics,
   } = useDataStore();
+  const seenSwipeHint = usePreferencesStore((s) => s.seenBalanceSwipeTooltip);
+  const setSeenSwipeHint = usePreferencesStore((s) => s.setSeenBalanceSwipeTooltip);
   const showRecentSkeleton = transactionsLoading && transactionsLoadedAt === 0;
   const [refreshing, setRefreshing] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
+  const [duplicatePrefill, setDuplicatePrefill] = useState<TransactionPrefill | null>(null);
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
   const [chartMode, setChartMode] = useState<ChartMode>('both');
+  const toast = useToast();
 
   // Refresca al recibir el foco (con throttle de 30s del store). Sin polling:
   // un setInterval consumiría conexiones MySQL (cuota de Hostinger) sin valor real.
@@ -65,8 +79,21 @@ export const DashboardScreen: React.FC = () => {
   };
 
   const currency = user?.currency || 'EUR';
-  const recent = transactions.slice(0, 5);
+  const periodStart = summary?.current_period_start;
+  const visibleTxs = useMemo(
+    () => filterByBalanceMode(transactions, balanceMode, periodStart),
+    [transactions, balanceMode, periodStart],
+  );
+  const recent = visibleTxs.slice(0, 5);
   const selectedMonth = summary?.month_year || analyticsMonth || currentMonthYear();
+  const handleModeChange = useCallback(
+    (m: 'month' | 'historical') => {
+      setBalanceMode(m);
+      // Cualquier interacción con la card descarta la pista.
+      if (!seenSwipeHint) setSeenSwipeHint(true);
+    },
+    [setBalanceMode, seenSwipeHint, setSeenSwipeHint],
+  );
 
   const selectMonth = (m: string) => {
     setMonthPickerOpen(false);
@@ -104,6 +131,41 @@ export const DashboardScreen: React.FC = () => {
       ds.push({ data: chartData.expenses, color: () => palette.danger, strokeWidth: 2.5 });
     return ds;
   }, [chartMode, chartData, palette]);
+
+  // --- Swipe actions sobre "Recientes" ---
+
+  const handleDeleteTx = useCallback(async (id: number) => {
+    const ok = await confirm({
+      title: 'Eliminar movimiento',
+      message: '¿Seguro? Esta acción no se puede deshacer.',
+      destructive: true,
+      confirmLabel: 'Eliminar',
+    });
+    if (!ok) return;
+    try {
+      await transactionsApi.remove(id);
+      await refreshAll(true);
+      toast.success('Eliminado');
+    } catch (e) {
+      toast.error(apiError(e, 'No se pudo eliminar'));
+    }
+  }, [toast, refreshAll]);
+
+  const handleDuplicateTx = useCallback((tx: Transaction) => {
+    const prefill: TransactionPrefill = {
+      amount: String(tx.amount),
+      description: tx.description,
+      type: tx.type,
+      paymentMethod: tx.payment_method ?? null,
+      category_id: tx.category_id,
+      notes: tx.notes,
+      date: todayISO(),
+      scope: tx.scope ?? 'month',
+    };
+    setEditing(null);
+    setDuplicatePrefill(prefill);
+    setSheetOpen(true);
+  }, []);
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.bgBase }}>
@@ -147,15 +209,21 @@ export const DashboardScreen: React.FC = () => {
             </Pressable>
           </View>
 
-          {/* Hero saldo */}
+          {/* Hero saldo (modo dual: Saldo del mes ⇄ Mis ahorros) */}
           <View style={{ paddingHorizontal: spacing.lg }}>
             <BalanceHero
+              mode={balanceMode}
+              onModeChange={handleModeChange}
+              currency={currency}
               balance={summary?.balance ?? 0}
               income={summary?.total_income ?? 0}
               expense={summary?.total_expense ?? 0}
               savingsRatio={summary?.savings_ratio ?? 0}
               savedThisMonth={summary?.saved_this_month ?? 0}
-              currency={currency}
+              historicalAmount={summary?.net_total_historical ?? 0}
+              avgMonthlyExpense={projection?.avg_monthly_expense}
+              showSwipeHint={!seenSwipeHint && balanceMode === 'month'}
+              onDismissSwipeHint={() => setSeenSwipeHint(true)}
             />
           </View>
 
@@ -294,14 +362,17 @@ export const DashboardScreen: React.FC = () => {
                 </View>
               ) : (
                 recent.map((t) => (
-                  <TransactionRow
+                  <SwipeableTransactionRow
                     key={t.id}
-                    tx={t}
+                    transaction={t}
                     currency={currency}
                     onPress={() => {
                       setEditing(t);
+                      setDuplicatePrefill(null);
                       setSheetOpen(true);
                     }}
+                    onDelete={handleDeleteTx}
+                    onDuplicate={handleDuplicateTx}
                   />
                 ))
               )}
@@ -332,7 +403,7 @@ export const DashboardScreen: React.FC = () => {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         editing={editing}
-        onSaved={refreshAll}
+        onSaved={() => refreshAll()}
       />
     </View>
   );

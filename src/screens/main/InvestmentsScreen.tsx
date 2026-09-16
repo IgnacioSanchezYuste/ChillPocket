@@ -12,6 +12,8 @@ import { ScreenHeader } from '../../components/ScreenHeader';
 import { Input } from '../../components/Input';
 import { Button } from '../../components/Button';
 import { SegmentedControl } from '../../components/SegmentedControl';
+import { PremiumLock } from '../../components/PremiumLock';
+import { useBilling } from '../../store/useBillingStore';
 import { formatMoney } from '../../utils/format';
 
 type Frequency = 'weekly' | 'monthly' | 'yearly';
@@ -67,6 +69,8 @@ function compoundProjection(
 export const InvestmentsScreen: React.FC = () => {
   const { palette } = useTheme();
   const { user } = useAuthStore();
+  const billing = useBilling();
+  const canAdvanced = billing.hasFeature('advanced_analytics');
   const currency = user?.currency || 'EUR';
   const screenW = Dimensions.get('window').width;
 
@@ -135,6 +139,13 @@ export const InvestmentsScreen: React.FC = () => {
       <ScrollView contentContainerStyle={{ paddingBottom: spacing.xxxl * 2 }}>
         <ScreenHeader title="Inversiones" subtitle="Calculadora de interés compuesto" showBack />
 
+        {/* Cuerpo de la calculadora — feature Plus (advanced_analytics) */}
+        {!canAdvanced && (
+          <View style={{ paddingHorizontal: spacing.lg, paddingTop: spacing.md }}>
+            <PremiumLock label="Calculadora de inversiones" feature="advanced_analytics" />
+          </View>
+        )}
+        {canAdvanced && (
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
           {/* Parámetros */}
           <Card>
@@ -409,6 +420,7 @@ export const InvestmentsScreen: React.FC = () => {
             </Card>
           )}
         </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );

@@ -8,9 +8,14 @@
     RewriteEngine On
     RewriteBase /API_Finanzas/
 
-    # Preflight OPTIONS: responder 200 directamente
-    RewriteCond %{REQUEST_METHOD} OPTIONS
-    RewriteRule ^(.*)$ $1 [R=200,L]
+    # Preflight OPTIONS: cortocircuito 204 (No Content) sin reescritura ni
+    # Location. `R=200`/`R=200,L` con `R=` en mayúscula hace que Apache
+    # responda con un redirect HTTP (302 con Location al propio URL); el
+    # navegador entonces vuelve a pedir el endpoint con GET y Slim devuelve
+    # 405 "Método no permitido". El patrón estándar es `R=204` (sin body,
+    # sin Location), y los headers CORS los pone el bloque Header de abajo.
+    RewriteCond %{REQUEST_METHOD} =OPTIONS
+    RewriteRule ^ - [R=204,L]
 
     # Redirigir todo lo que no sea archivo/directorio real a index.php
     RewriteCond %{REQUEST_FILENAME} !-f

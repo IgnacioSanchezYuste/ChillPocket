@@ -1,0 +1,154 @@
+CHILLPOCKET — COMANDOS (PowerShell, desde la raíz del proyecto)
+
+
+===== INSTALACIÓN =====
+
+Instalar dependencias
+npm install
+
+Reinstalar dependencias desde cero
+Remove-Item -Recurse -Force node_modules; npm install
+
+Añadir una librería compatible con el SDK de Expo
+npx expo install NOMBRE_PAQUETE
+
+Actualizar EAS CLI
+npm install -g eas-cli
+
+
+===== WEB =====
+
+Ejecutar en el navegador
+npx expo start -c --web
+
+Generar la web de producción (carpeta dist)
+npx expo export --platform web
+
+Servir la web de producción en local
+npx expo serve
+
+
+===== MÓVIL FÍSICO (USB) =====
+
+Ver dispositivos conectados
+adb devices
+
+Redirigir el puerto de Metro al móvil
+adb reverse tcp:8081 tcp:8081
+
+Arrancar Metro y abrir la app en el móvil (dev build ya instalado)
+npx expo start -c --dev-client --android
+
+Compilar e instalar el dev build en el móvil
+npx expo run:android --device
+
+Compilar e instalar la versión release en el móvil
+npx expo run:android --device --variant release
+
+Instalar un APK en el móvil
+adb install -r RUTA\app.apk
+
+Abrir el menú de desarrollo en el móvil
+adb shell input keyevent 82
+
+Ver logs de la app
+adb logcat *:S ReactNative:V ReactNativeJS:V
+
+
+===== EMULADOR ANDROID =====
+
+Listar emuladores
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -list-avds
+
+Arrancar emulador
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd Pixel_9_Pro
+
+Arrancar Metro y abrir la app en el emulador (dev build ya instalado)
+npx expo start -c --dev-client --android
+
+Compilar e instalar el dev build en el emulador
+npx expo run:android
+
+
+===== COMPROBACIONES =====
+
+Typecheck + tests
+npm run check
+
+Typecheck
+npx tsc --noEmit
+
+Tests
+npm test
+
+Tests en modo watch
+npm run test:watch
+
+Diagnóstico del proyecto Expo
+npx expo-doctor
+
+Comprobar versiones de dependencias
+npx expo install --check
+
+Comprobar sintaxis del backend
+php -l backend\index.php
+
+
+===== BUILD EN EXPO (EAS) =====
+
+Iniciar sesión
+eas login
+
+Ver cuenta activa
+eas whoami
+
+APK de desarrollo (dev client)
+eas build -p android --profile development
+
+APK instalable (preview)
+eas build -p android --profile preview
+
+AAB para Google Play (production)
+eas build -p android --profile production
+
+Ver últimas builds
+eas build:list -p android --limit 5
+
+Subir el último AAB a Google Play
+eas submit -p android --latest
+
+Gestionar keystore y credenciales
+eas credentials -p android
+
+
+===== BUILD LOCAL =====
+
+Generar el proyecto nativo Android
+npx expo prebuild -p android --clean
+
+APK release local
+cd android; .\gradlew.bat assembleRelease; cd ..
+
+Abrir carpeta del APK release local
+explorer android\app\build\outputs\apk\release
+
+Instalar el APK release local en el móvil
+adb install -r android\app\build\outputs\apk\release\app-release.apk
+
+AAB release local (firmado con clave debug; para Google Play usar EAS)
+cd android; .\gradlew.bat bundleRelease; cd ..
+
+Abrir carpeta del AAB release local
+explorer android\app\build\outputs\bundle\release
+
+APK debug local
+cd android; .\gradlew.bat assembleDebug; cd ..
+
+Limpiar build nativo
+cd android; .\gradlew.bat clean; cd ..
+
+APK con EAS en local (solo WSL, Linux o macOS)
+eas build -p android --profile preview --local
+
+AAB con EAS en local (solo WSL, Linux o macOS)
+eas build -p android --profile production --local

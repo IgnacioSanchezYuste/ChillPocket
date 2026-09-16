@@ -27,11 +27,18 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   editing?: Recurring | null;
-  onSaved?: () => void;
+  /**
+   * Callback tras guardar. En creación recibe el ID del recurrente creado;
+   * en edición/borrado recibe null. El parámetro es opcional para no romper
+   * los callsites existentes que no capturan el valor.
+   */
+  onSaved?: (createdId?: number | null) => void;
   prefill?: RecurringPrefill | null;
+  /** Fecha de inicio forzada (para el onboarding personalizado). */
+  forcedStartDate?: string;
 };
 
-export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved, prefill }) => {
+export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved, prefill, forcedStartDate }) => {
   const { categories, fetchCategories, fetchRecurring } = useDataStore();
   const toast = useToast();
   const [type, setType] = useState<'expense' | 'income'>('expense');
@@ -60,7 +67,8 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
         setName(prefill.name ?? '');
         setAmount(prefill.amount ?? '');
         setFrequency(prefill.frequency ?? 'monthly');
-        setStartDate(todayISO());
+        // forcedStartDate permite al onboarding ajustar la fecha al día de cobro.
+        setStartDate(forcedStartDate ?? todayISO());
         setCategoryId(null);
       } else {
         setType('expense');
@@ -101,20 +109,29 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
           category_id: categoryId,
         } as any);
         toast.success('Actualizado');
+        await fetchRecurring(true);
+        onSaved?.(null);
+        onClose();
       } else {
-        await recurringApi.create({
+        const res = await recurringApi.create({
           name: name.trim(),
           amount: amt,
           type,
           frequency,
           start_date: startDate,
           category_id: categoryId,
-        } as any);
+        } as any) as { id?: number; recurring?: { id?: number } };
         toast.success('Creado');
+        // Intentamos extraer el ID del recurrente recién creado.
+        // El backend devuelve { success, id } o { success, recurring: { id } }.
+        const createdId: number | null =
+          typeof res?.id === 'number' ? res.id :
+          typeof res?.recurring?.id === 'number' ? res.recurring.id :
+          null;
+        await fetchRecurring(true);
+        onSaved?.(createdId);
+        onClose();
       }
-      await fetchRecurring(true);
-      onSaved?.();
-      onClose();
     } catch (e) {
       toast.error(apiError(e));
     } finally {
@@ -134,7 +151,7 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
       await recurringApi.remove(editing.id);
       toast.success('Eliminado');
       await fetchRecurring(true);
-      onSaved?.();
+      onSaved?.(null);
       onClose();
     } catch (e) {
       toast.error(apiError(e));

@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, Pressable, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { spacing, radius } from '../theme/spacing';
@@ -13,6 +13,8 @@ type Props = {
   monthYear: string; // 'YYYY-MM'
   daily: DailyPoint[];
   currency: string;
+  /** Callback al tocar un día del calendario. Si se omite, las celdas no son clicables. */
+  onDayPress?: (date: string) => void;
 };
 
 const WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
@@ -26,10 +28,11 @@ function rgba(hex: string, alpha: number) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-export const SpendingHabits: React.FC<Props> = ({ monthYear, daily, currency }) => {
+export const SpendingHabits: React.FC<Props> = ({ monthYear, daily, currency, onDayPress }) => {
   const { palette } = useTheme();
 
   const [year, month] = monthYear.split('-').map(Number);
+  const monthStr = String(month).padStart(2, '0');
 
   const model = useMemo(() => {
     const daysInMonth = new Date(year, month, 0).getDate();
@@ -141,23 +144,48 @@ export const SpendingHabits: React.FC<Props> = ({ monthYear, daily, currency }) 
             {week.map((cell, ci) => (
               <View key={ci} style={styles.cellWrap}>
                 {cell ? (
-                  <View
-                    style={[
-                      styles.cell,
-                      {
-                        backgroundColor: cellColor(cell.spent, cell.future),
-                        borderColor: palette.borderSubtle,
-                      },
-                    ]}
-                  >
-                    <Text
-                      variant="caption"
-                      align="center"
-                      style={{ color: cell.future ? palette.textMuted : palette.textPrimary, fontSize: 10 }}
+                  onDayPress && !cell.future ? (
+                    // Día clicable: navegamos al detalle del día. Días futuros
+                    // permanecen como Views planas (no hay nada que mostrar).
+                    <Pressable
+                      onPress={() => onDayPress(`${year}-${monthStr}-${String(cell.day).padStart(2, '0')}`)}
+                      style={[
+                        styles.cell,
+                        {
+                          backgroundColor: cellColor(cell.spent, cell.future),
+                          borderColor: palette.borderSubtle,
+                        },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Día ${cell.day}: ${formatMoney(cell.spent, currency)}`}
                     >
-                      {cell.day}
-                    </Text>
-                  </View>
+                      <Text
+                        variant="caption"
+                        align="center"
+                        style={{ color: palette.textPrimary, fontSize: 10 }}
+                      >
+                        {cell.day}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <View
+                      style={[
+                        styles.cell,
+                        {
+                          backgroundColor: cellColor(cell.spent, cell.future),
+                          borderColor: palette.borderSubtle,
+                        },
+                      ]}
+                    >
+                      <Text
+                        variant="caption"
+                        align="center"
+                        style={{ color: cell.future ? palette.textMuted : palette.textPrimary, fontSize: 10 }}
+                      >
+                        {cell.day}
+                      </Text>
+                    </View>
+                  )
                 ) : (
                   <View style={styles.cell} />
                 )}

@@ -1,64 +1,81 @@
 # ChillPocket — Visión general de la app
 
-> Documento de conocimiento compartido. **Todos los agentes deben leerlo antes de trabajar.**
+> Punto de partida para cualquier sesión o agente. Detalle en los demás documentos de `knowledge/`:
+> `conventions.md` (reglas) · `data-model.md` · `backend-api.md` · `frontend-map.md` · `app-features.md` (producto).
 
 ## Qué es
-**ChillPocket** es una app de gestión de finanzas personales (móvil iOS/Android + web). Permite registrar
-ingresos y gastos, organizar por categorías, definir gastos/ingresos recurrentes (suscripciones, nómina),
-presupuestos por categoría, metas de ahorro (modelo "sobre"/envelope), analítica avanzada (donut por
-categoría, métodos de pago, tendencias, forecast) y una calculadora de inversiones (interés compuesto).
+**ChillPocket** es una app de finanzas personales (Android publicado en Play; web funcional sin despliegue público;
+iOS preparado sin build). Registra ingresos y gastos por categorías, recurrentes (suscripciones, nómina),
+presupuestos, metas de ahorro (modelo "sobre"), un **modelo dual "Saldo del mes / Mis ahorros"** con periodo
+financiero por día de cobro, analítica avanzada, patrimonio, calculadora de inversiones, exportación CSV/PDF,
+fotos de recibos y bloqueo con PIN/biometría. Modelo **freemium** (Gratis / Plus; Familia y Pro Freelance aún sin
+funcionalidad propia).
 
 ## Stack
-- **Frontend**: Expo SDK 54, React Native 0.81.5, React 19.1.0, TypeScript. Web vía `react-native-web`.
-  - Navegación: `@react-navigation` (native-stack + bottom-tabs).
-  - Estado: `zustand` (stores en `src/store/`). Persistencia ligera con `@react-native-async-storage`.
-  - Red: `axios` (`src/api/http.ts`), endpoints en `src/api/endpoints.ts`.
-  - Gráficas: `react-native-chart-kit` + `react-native-svg` (sparklines/donut propios).
-  - Estilo: design system propio en `src/theme/` + `src/components/`. `expo-linear-gradient` para degradados.
-  - Auth Google: web = `expo-auth-session` (id_token implícito); nativo = `@react-native-google-signin`.
-- **Backend**: PHP + **Slim Framework 4** (`backend/index.php`, un único archivo), PDO sobre **MySQL/MariaDB**.
-  - JWT con `firebase/php-jwt` (expiración 7 días). CORS y rewrite en `backend/.htaccess`.
-  - Hosting: **Hostinger** (compartido) → límite duro de **500 conexiones MySQL/hora** (clave para diseño).
-- **DB**: MariaDB 10.3+. Esquema base en `backend/u204231532_Finanzas.sql`; migraciones idempotentes en `backend/update.sql`.
+- **Frontend**: Expo SDK 54, React Native 0.81.5 (New Architecture), React 19.1, TypeScript estricto.
+  Web con `react-native-web`.
+  - Navegación `@react-navigation` (native-stack + bottom-tabs) · estado `zustand` · red `axios`.
+  - Gráficas `react-native-chart-kit` + SVG propios · degradados `expo-linear-gradient`.
+  - Nativo: `expo-secure-store`, `expo-local-authentication`, `expo-image-picker`, `expo-print`, `expo-sharing`,
+    `expo-file-system`, `expo-haptics`, `react-native-purchases` (RevenueCat), `@react-native-google-signin`.
+    **No funciona en Expo Go**: hace falta el dev client (`expo-dev-client`).
+- **Backend**: PHP + **Slim 4** en un único fichero (`backend/index.php`), PDO sobre MySQL/MariaDB, JWT
+  (`firebase/php-jwt`, 7 días). CORS y rewrite en `backend/.htaccess`.
+  - Hosting **Hostinger** compartido → límite duro de **500 conexiones MySQL/hora**.
+- **DB**: MariaDB 10.3+. Esquema base `backend/u204231532_Finanzas.sql` (desactualizado) + migraciones
+  idempotentes en `backend/update.sql`.
+- **Tests**: Jest (`jest-expo`) sobre la lógica pura de `src/utils/`.
 
 ## Estructura del repositorio
 ```
-App.tsx                      Entrada Expo (providers: GestureHandler, SafeArea, Theme, Toast, ErrorBoundary)
+App.tsx              Entrada: providers, hidratación de seguridad, RevenueCat
 src/
-  api/         http.ts (axios + JWT + handler 401), endpoints.ts (contratos), types.ts (tipos compartidos)
-  components/  design system (Text, Card, Button, Input, FAB, BalanceHero, DonutChart, Sparkline, ...)
-  navigation/  RootNavigator (auth gate), AppNavigator (tabs+stack), FloatingTabBar, navigationRef
-  onboarding/  OnboardingHost, SpotlightOverlay, useSpotlightTarget (tutorial guiado con spotlight)
-  screens/     auth/ (Login, Register), main/ (Dashboard, Transactions, Analytics, Recurring, Goals,
-               Budgets, Investments, Categories, Settings), modals/ (TransactionSheet, RecurringSheet, GoalSheet)
-  store/       useAuthStore, useDataStore, usePreferencesStore, useOnboardingStore
-  theme/       colors (paletas light/dark), spacing, layout (responsive web), ThemeProvider
-  utils/       format, validators, paymentMethods, categoryIcon, confirm, googleSession
+  api/               http.ts (axios + JWT + 401/403), endpoints.ts (contratos), types.ts, googleConfig.ts
+  billing/           purchases.ts (RevenueCat)
+  components/        design system + componentes de datos (algunos con variante .web/.native)
+  hooks/             useCountUp, useGoogleAuth
+  navigation/        RootNavigator (auth + lock), AppNavigator (tabs + stack + hub "Más"), AuthNavigator
+  onboarding/        OnboardingHost, SpotlightOverlay, useSpotlightTarget
+  screens/           auth/ (Login, Register, Lock) · main/ (12 pantallas) · modals/ (4 sheets)
+  store/             useAuth, useData, usePreferences, useOnboarding, useSecurity, useBilling
+  theme/             colors, spacing, layout (responsive), ThemeProvider
+  utils/             lógica pura con tests en __tests__/ + helpers de plataforma
 backend/
-  index.php    TODA la API (Slim). Helpers: verifyGoogleIdToken, expandRecurringTransactions, availableBalance...
-  .htaccess    CORS + rewrite a index.php
-  update.sql   migración idempotente 1.1.0
-  Conexion.example.php   plantilla de credenciales PDO (la real es Conexion.php, NO versionada)
-.claude/       Este sistema de agentes (equipo full-stack)
+  index.php          TODA la API
+  .htaccess          CORS + rewrite
+  update.sql         migraciones idempotentes (§5–§10)
+  Images/.htaccess   bloquea el acceso directo a los recibos subidos
+  Conexion.php       credenciales PDO y secretos — SOLO en el servidor, nunca en el repo
+docs/                privacy-policy.html, screenshots
+.claude/             sistema de agentes (ver .claude/README.md)
+comandos.txt         comandos de ejecución, build y despliegue listos para copiar
 ```
 
 ## Cómo ejecutar
-- **Frontend**: `npx expo start -c` (web/Expo Go). Typecheck: `npx tsc --noEmit`. No hay aún test runner configurado.
-- **Build nativo**: EAS (`eas build -p android --profile preview`). Variables `EXPO_PUBLIC_*` se inyectan en build (ver `eas.json`).
-- **Backend**: se sube `index.php` + `.htaccess` por FTP a Hostinger; migraciones SQL por phpMyAdmin.
+Todos los comandos están en `comandos.txt`. Los esenciales:
+- `npx expo start -c --dev-client` (móvil con dev build) · `npx expo start -c --web` (web).
+- `npm run check` = `tsc --noEmit` + Jest.
+- Build: `eas build -p android --profile preview` (APK) / `--profile production` (AAB).
+- Backend: FTP de `index.php` (+ `.htaccess`) y SQL por phpMyAdmin.
 
 ## Variables de entorno (frontend, prefijo `EXPO_PUBLIC_`)
-- `EXPO_PUBLIC_API_URL` — base URL del backend.
-- `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID` — OAuth Google.
-- `.env` está en `.gitignore`; `.env.example` documenta las claves.
+`EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`,
+`EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY`. En local vienen de `.env` (no versionado; claves en `.env.example`);
+en EAS, de `eas.json` por perfil. Backend: `JWT_SECRET`, `REVENUECAT_WEBHOOK_AUTH`, credenciales PDO en `Conexion.php`.
 
-## Restricciones de diseño que condicionan TODO
-1. **Hostinger 500 conexiones MySQL/hora.** Por eso existe `GET /analytics/all` (1 request en vez de 7) y
-   el store tiene throttle de 30s. **No multipliques llamadas HTTP** sin motivo.
-2. **Recurrentes se generan de forma perezosa** (lazy): al pedir datos se ejecuta `expandRecurringTransactions`,
-   que inserta las transacciones que tocan con `INSERT ... ` idempotente gracias a la UNIQUE
-   `(user_id, recurring_id, transaction_date)`. No hay cron.
-3. **Multiplataforma**: hay archivos `*.native.tsx` / `*.web.tsx` resueltos por Metro. Cuida ambas plataformas.
+## Restricciones que condicionan todo
+1. **500 conexiones MySQL/hora** → `GET /analytics/all` (1 petición en vez de 7), throttle de 30 s en el store,
+   sin polling.
+2. **Sin cron** → recurrentes y cierres de periodo se generan de forma perezosa en cada petición autenticada.
+3. **Multiplataforma** → ficheros `*.native.tsx` / `*.web.tsx`; cuidar ambos.
 
-## Identidad de marca / nombre
-La app se llama **ChillPocket**. Tono pastel en claro, sobrio en oscuro. Logo en `assets/` (`adaptive-icon.png`).
+## Monetización
+- Planes en BD (`plans`) con `limits` y `features`; plan activo en `user_entitlements`. El backend los inyecta en
+  `user` (`plan_code, limits, features, is_premium…`); el front los lee con `useBilling()`.
+- **Gating real** en el servidor: límites de creación, historial > 3 meses, exportación y recibos
+  (403 `plan_limit_reached` → Paywall). En la UI, `PremiumLock` en las secciones avanzadas.
+- Early adopters: Plus gratis de por vida (`source='early_adopter'`).
+- RevenueCat conectado (SDK + webhook). Pendiente: productos y offering en Play/RevenueCat.
+
+## Identidad
+Nombre **ChillPocket**. Pastel en claro, sobrio en oscuro, morado/azul violeta como acento. Logo en `assets/`.

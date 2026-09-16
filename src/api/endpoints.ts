@@ -1,4 +1,4 @@
-import { http } from './http';
+import { http, API_URL } from './http';
 import type {
   AuthResponse,
   Budget,
@@ -55,6 +55,10 @@ export type TransactionFilter = {
   type?: 'expense' | 'income';
   category_id?: number;
   payment_method?: PaymentMethod;
+  /** Importe mínimo inclusive. */
+  amount_min?: number;
+  /** Importe máximo inclusive. */
+  amount_max?: number;
   search?: string;
   limit?: number;
   offset?: number;
@@ -73,6 +77,8 @@ export const transactionsApi = {
     category_id?: number | null;
     payment_method?: PaymentMethod | null;
     notes?: string | null;
+    /** Fase 4: 'month' (default) afecta al saldo del mes, 'historical' a "Mis ahorros". */
+    scope?: 'month' | 'historical';
   }) =>
     http
       .post<{ success: true; transaction: Transaction }>('/transactions', data)
@@ -80,6 +86,51 @@ export const transactionsApi = {
   update: (id: number, data: Partial<Transaction>) =>
     http.put(`/transactions/${id}`, data).then((r) => r.data),
   remove: (id: number) => http.delete(`/transactions/${id}`).then((r) => r.data),
+  /** Exporta las transacciones del usuario como CSV (texto crudo).
+   *  Backend devuelve text/csv con BOM UTF-8; el caller decide cómo entregarlo
+   *  (Blob+download en web, Share en nativo). Si el plan no incluye `export`,
+   *  el backend responde 403 plan_limit_reached y el interceptor abre Paywall. */
+  exportCsv: (filter?: { from?: string; to?: string }) =>
+    http
+      .get<string>('/transactions/export', {
+        params: { format: 'csv', ...(filter ?? {}) },
+        responseType: 'text',
+        transformResponse: [(d) => d], // evita que axios intente JSON.parse el CSV
+      })
+      .then((r) => r.data),
+
+  // -------- RECIBOS (Ola 2) --------
+
+  /**
+   * Sube (o reemplaza) la foto del justificante de una transacción.
+   * Gate Plus/Lifetime: el backend devuelve 403 si el plan no lo permite.
+   * El campo multipart debe llamarse `receipt`.
+   * IMPORTANTE: NO forzamos `application/json`; dejamos que el navegador/RN
+   * ponga el boundary correcto del multipart. Axios no añadirá JSON Content-Type
+   * si le pasamos FormData.
+   */
+  uploadReceipt: (id: number, form: FormData): Promise<{ success: boolean; receipt_url: string }> =>
+    http
+      .post<{ success: boolean; receipt_url: string }>(`/transactions/${id}/receipt`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data),
+
+  /**
+   * Elimina la foto de justificante de una transacción.
+   * El backend borra el archivo físico y pone receipt_path = NULL en BDD.
+   */
+  deleteReceipt: (id: number): Promise<void> =>
+    http.delete(`/transactions/${id}/receipt`).then(() => undefined),
+
+  /**
+   * Construye la URL absoluta del endpoint de stream privado del recibo.
+   * NO hace fetch — sólo devuelve la URL para usarla en AuthImage.
+   * El token JWT se añade en la cabecera Authorization en AuthImage,
+   * porque el backend requiere autenticación para servir la imagen.
+   */
+  getReceiptUrl: (id: number): string =>
+    `${API_URL}/transactions/${id}/receipt`,
 };
 
 // -------- RECURRING --------
@@ -119,8 +170,15 @@ export const goalsApi = {
     http.post('/savings-goals', data).then((r) => r.data),
   update: (id: number, data: Partial<SavingsGoal>) =>
     http.put(`/savings-goals/${id}`, data).then((r) => r.data),
-  contribute: (id: number, amount: number) =>
-    http.post<GoalContributeResponse>(`/savings-goals/${id}/contribute`, { amount }).then((r) => r.data),
+  /**
+   * Aporta (amount > 0) o retira (amount < 0) de una meta.
+   * `scope` (Fase 4): contra qué pool valida el saldo (aporte) o a qué pool
+   * va el dinero (retirada). Default 'month'.
+   */
+  contribute: (id: number, amount: number, scope?: 'month' | 'historical') =>
+    http.post<GoalContributeResponse>(`/savings-goals/${id}/contribute`,
+      scope ? { amount, scope } : { amount }
+    ).then((r) => r.data),
   remove: (id: number) => http.delete(`/savings-goals/${id}`).then((r) => r.data),
 };
 
@@ -130,9 +188,9 @@ export const budgetsApi = {
     http
       .get<{ budgets: Budget[]; month_year: string }>('/budgets', { params: { month_year } })
       .then((r) => r.data.budgets),
-  upsert: (data: { amount: number; month_year: string; category_id?: number | null; reset_day?: number }) =>
+  upsert: (data: { amount: number; month_year: string; category_id?: number | null; reset_day?: number; auto_renew?: boolean | 0 | 1 }) =>
     http.post('/budgets', data).then((r) => r.data),
-  update: (id: number, data: { amount?: number; reset_day?: number }) =>
+  update: (id: number, data: { amount?: number; reset_day?: number; auto_renew?: boolean | 0 | 1 }) =>
     http.put(`/budgets/${id}`, data).then((r) => r.data),
   remove: (id: number) => http.delete(`/budgets/${id}`).then((r) => r.data),
 };

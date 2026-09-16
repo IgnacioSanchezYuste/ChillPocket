@@ -1,13 +1,79 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "Bash(npx expo-doctor *)",
-      "Bash(echo \"TSC EXIT: $?\")",
-      "Bash(cd \"c:\\\\Users\\\\nacho\\\\Documents\\\\DAM\\\\MiosProyectos\\\\ChillPocket\" && ls -a | grep -iE '\\\\.env' && echo \"=== content \\(keys only, values masked\\) ===\" && sed -E 's/=\\(.{12}\\).*/=\\\\1…\\(masked\\)/' .env 2>/dev/null)",
-      "Bash(grep -E '^\\\\.env$')"
+      "Bash(npx tsc *)",
+      "Bash(npx jest *)",
+      "Bash(npm test*)",
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(npx expo *)",
+      "Bash(npx eas *)",
+      "Bash(eas build*)",
+      "Bash(eas whoami*)",
+      "Bash(php -l *)",
+      "Bash(adb devices*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "PowerShell(npx tsc *)",
+      "PowerShell(npx jest *)",
+      "PowerShell(npm test*)",
+      "PowerShell(npm run *)"
     ],
-    "additionalDirectories": [
-      "c:\\Users\\nacho\\Documents\\DAM\\MiosProyectos\\ChillPocket"
+    "ask": [
+      "Bash(git push*)",
+      "PowerShell(git push*)",
+      "Bash(eas submit*)",
+      "Bash(npx eas submit*)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Edit(**/.env)",
+      "Edit(**/.env.local)",
+      "Edit(**/.env.*.local)",
+      "Read(**/backend/Conexion.php)",
+      "Edit(**/backend/Conexion.php)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-secrets.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/php-lint.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-checks.mjs\"",
+            "timeout": 240,
+            "statusMessage": "Comprobando tsc y tests…"
+          }
+        ]
+      }
     ]
   }
 }

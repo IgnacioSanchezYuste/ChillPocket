@@ -3,7 +3,7 @@
     "name": "ChillPocket",
     "slug": "Finanzas",
     "scheme": "chillpocket",
-    "version": "1.4.0",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -33,14 +33,23 @@
     },
     "extra": {
       "eas": {
-        "projectId": "971577e2-999b-435f-82ad-68ed12aa4400"
+        "projectId": "4be735dc-f97f-411b-9cae-6a6b9e10eee7"
       }
     },
-    "owner": "nacho_06",
+    "owner": "nachonsennn",
     "plugins": [
       "expo-font",
       "expo-web-browser",
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "ChillPocket necesita acceso a tu galería para adjuntar el justificante a esta transacción.",
+          "cameraPermission": "ChillPocket necesita acceso a la cámara para fotografiar el justificante de esta transacción.",
+          "microphonePermission": false
+        }
+      ]
     ]
   }
 }

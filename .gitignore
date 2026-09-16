@@ -40,3 +40,13 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# builds locales
+*.apk
+*.aab
+
+# backend: credenciales (solo en el servidor)
+backend/Conexion.php
+
+# Claude Code: configuración personal de cada máquina
+.claude/settings.local.json
