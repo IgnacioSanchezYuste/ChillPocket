@@ -42,6 +42,7 @@
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
       "expo-secure-store",
+      "expo-notifications",
       [
         "expo-image-picker",
         {

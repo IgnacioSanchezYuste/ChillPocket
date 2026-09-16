@@ -35,6 +35,11 @@ export type Transaction = {
   updated_at: string;
   /** Fase 2: determina si la transacción afecta al saldo del mes o a "Mis ahorros". */
   scope?: 'month' | 'historical';
+  /**
+   * Transferencia entre cuentas: 0 = movimiento normal, 1 = manual, 2 = ahorro automático.
+   * Gasto = del saldo del mes a "Mis ahorros"; ingreso = de "Mis ahorros" al saldo del mes.
+   */
+  transfer?: 0 | 1 | 2;
   /** Recibos (Ola 2): ruta del justificante en el servidor; null si no se ha adjuntado foto. */
   receipt_path?: string | null;
 };

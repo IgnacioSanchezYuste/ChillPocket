@@ -12,6 +12,7 @@ import { usePreferencesStore } from './src/store/usePreferencesStore';
 import { useSecurityStore, LOCK_BACKGROUND_GRACE_MS } from './src/store/useSecurityStore';
 import { initPurchases } from './src/billing/purchases';
 import { initUsageTracking } from './src/utils/analytics';
+import { initReminders } from './src/notifications/reminders';
 
 const Inner: React.FC = () => {
   const { mode } = useTheme();
@@ -30,6 +31,9 @@ const Inner: React.FC = () => {
   // Monitoreo de uso anónimo: cuenta la apertura y envía los contadores en
   // lotes (segundo plano / arranque), sin una petición por evento.
   useEffect(() => initUsageTracking(), []);
+
+  // Recordatorios locales los días que no se abre la app (config en src/config/reminders.ts).
+  useEffect(() => initReminders(), []);
 
   // Auto-lock cuando la app vuelve a foreground tras > LOCK_BACKGROUND_GRACE_MS.
   useEffect(() => {

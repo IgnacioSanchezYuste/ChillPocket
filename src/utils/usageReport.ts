@@ -36,6 +36,8 @@ export const USAGE_LABELS: Record<string, string> = {
   'transaction_created:expense': 'Gasto creado',
   'transaction_created:income': 'Ingreso creado',
   transaction_created: 'Movimiento creado',
+  'savings_transfer:to_savings': 'Transferencia a ahorro',
+  'savings_transfer:to_spending': 'Retirada de ahorro',
   transaction_updated: 'Movimiento editado',
   transaction_deleted: 'Movimiento eliminado',
   transaction_duplicated: 'Movimiento duplicado',

@@ -296,7 +296,7 @@ const Insight: React.FC<{
 const styles = StyleSheet.create({
   weekHeader: { flexDirection: 'row', marginBottom: 4 },
   weekRow: { flexDirection: 'row', marginBottom: 4 },
-  cellWrap: { flex: 1, paddingHorizontal: 2 },
+  cellWrap: { width: `${100 / 7}%`, paddingHorizontal: 2 },
   cell: {
     aspectRatio: 1,
     borderRadius: radius.sm,

@@ -201,12 +201,15 @@ export const FinancialProfileSheet: React.FC<Props> = ({ visible, onClose }) => 
         )}
 
         <Input
-          label="Objetivo de ahorro mensual"
-          placeholder="Sin objetivo"
+          label="Ahorro automático mensual"
+          placeholder="Sin ahorro automático"
           keyboardType="decimal-pad"
           value={goalText}
           onChangeText={setGoalText}
-          helper={perMonth ? `Debe ser menor que ${formatMoney(perMonth, currency)}` : undefined}
+          helper={
+            'Cada día de cobro pasa solo del saldo del mes a Mis ahorros. Un cambio se aplica desde el próximo cobro.' +
+            (perMonth ? ` Debe ser menor que ${formatMoney(perMonth, currency)}.` : '')
+          }
         />
 
         {paydayChanged && (

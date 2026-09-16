@@ -380,14 +380,21 @@ function currentPeriodAvailable(PDO $conn, int $userId): float {
 /**
  * Saldo "histórico" disponible — "Mis ahorros" (Fase 4).
  * = SUM(monthly_closures.surplus) + SUM(income scope='historical') − SUM(expense scope='historical')
+ *   + transferencias (gasto del mes hacia ahorro − ingreso del mes desde ahorro)
  * Misma fórmula que summary.net_total_historical (la fuente de verdad).
  */
+const HISTORICAL_TX_SQL = "
+    COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
+  - COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
+  + COALESCE(SUM(CASE WHEN t.transfer > 0 AND t.type='expense' THEN t.amount ELSE 0 END), 0)
+  - COALESCE(SUM(CASE WHEN t.transfer > 0 AND t.type='income'  THEN t.amount ELSE 0 END), 0)
+";
+
 function historicalAvailable(PDO $conn, int $userId): float {
     $stmt = $conn->prepare("
         SELECT
             COALESCE((SELECT SUM(mc.surplus) FROM monthly_closures mc WHERE mc.user_id = :u), 0)
-          + COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
-          - COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='historical' THEN t.amount ELSE 0 END), 0) AS bal
+          + " . HISTORICAL_TX_SQL . " AS bal
         FROM transactions t
         WHERE t.user_id = :u
     ");
@@ -931,21 +938,67 @@ function verifyGoogleIdToken(string $idToken): array {
 
 // Devuelve el id de la categoría sistema "Ahorro" (user_id NULL). Si no
 // existe la crea, así el front no necesita preocuparse.
-function savingsCategoryId(PDO $conn): int {
+function savingsCategoryId(PDO $conn, string $type = 'expense'): int {
+    $type = $type === 'income' ? 'income' : 'expense';
     $stmt = $conn->prepare("
         SELECT id FROM categories
-        WHERE user_id IS NULL AND name = 'Ahorro' AND type = 'expense'
+        WHERE user_id IS NULL AND name = 'Ahorro' AND type = :t
         LIMIT 1
     ");
-    $stmt->execute();
+    $stmt->execute([':t' => $type]);
     $id = $stmt->fetchColumn();
     if ($id) return (int)$id;
     $ins = $conn->prepare("
         INSERT INTO categories (user_id, name, color, icon, type)
-        VALUES (NULL, 'Ahorro', '#10B981', 'savings', 'expense')
+        VALUES (NULL, 'Ahorro', '#10B981', 'savings', :t)
     ");
-    $ins->execute();
+    $ins->execute([':t' => $type]);
     return (int)$conn->lastInsertId();
+}
+
+/**
+ * Crea una transferencia entre "Saldo del mes" y "Mis ahorros": una fila
+ * scope='month' (gasto hacia ahorro, ingreso desde ahorro) con `transfer` > 0.
+ */
+function insertSavingsTransfer(PDO $conn, int $userId, string $direction, float $amount, string $date, int $kind): int {
+    $toSavings = $direction === 'to_savings';
+    $conn->prepare("
+        INSERT INTO transactions (user_id, category_id, amount, description, type, transaction_date, notes, scope, transfer)
+        VALUES (:u, :c, :a, :d, :t, :td, :n, 'month', :k)
+    ")->execute([
+        ':u'  => $userId,
+        ':c'  => savingsCategoryId($conn, $toSavings ? 'expense' : 'income'),
+        ':a'  => $amount,
+        ':d'  => $kind === 2 ? 'Ahorro automático' : ($toSavings ? 'Transferencia a Mis ahorros' : 'Retirada de Mis ahorros'),
+        ':t'  => $toSavings ? 'expense' : 'income',
+        ':td' => $date,
+        ':n'  => $kind === 2 ? 'Transferencia mensual a Mis ahorros' : null,
+        ':k'  => $kind,
+    ]);
+    return (int)$conn->lastInsertId();
+}
+
+/**
+ * Ahorro automático: una vez por periodo pasa `savings_goal_monthly` de
+ * "Saldo del mes" a "Mis ahorros", con fecha del inicio del periodo (día de cobro).
+ * `auto_savings_period` evita repetirla, también si el usuario la borra.
+ */
+function applyAutoSavings(PDO $conn, int $userId): void {
+    $st = $conn->prepare("SELECT savings_goal_monthly, auto_savings_period FROM users WHERE id = :u");
+    $st->execute([':u' => $userId]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    $amount = round((float)($row['savings_goal_monthly'] ?? 0), 2);
+    if (!$row || $amount <= 0) return;
+    $periodStart = currentPeriodStart($conn, $userId);
+    if ($row['auto_savings_period'] !== null && (string)$row['auto_savings_period'] >= $periodStart) return;
+    // Marca primero y con condición: dos peticiones a la vez no la duplican.
+    $mark = $conn->prepare("
+        UPDATE users SET auto_savings_period = :ps
+        WHERE id = :u AND (auto_savings_period IS NULL OR auto_savings_period < :ps2)
+    ");
+    $mark->execute([':ps' => $periodStart, ':ps2' => $periodStart, ':u' => $userId]);
+    if ($mark->rowCount() === 0) return;
+    insertSavingsTransfer($conn, $userId, 'to_savings', $amount, $periodStart, 2);
 }
 
 // =====================================================
@@ -963,8 +1016,11 @@ function expandRecurringTransactions(PDO $conn, int $userId): void {
     $stmt = $conn->prepare("
         SELECT r.id, r.category_id, r.name, r.amount, r.type,
                r.frequency, r.start_date, r.end_date,
-               (SELECT MAX(t.transaction_date) FROM transactions t
-                 WHERE t.recurring_id = r.id AND t.user_id = r.user_id) AS last_date
+               GREATEST(
+                   COALESCE(r.last_generated_date, '1000-01-01'),
+                   COALESCE((SELECT MAX(t.transaction_date) FROM transactions t
+                              WHERE t.recurring_id = r.id AND t.user_id = r.user_id), '1000-01-01')
+               ) AS last_date
         FROM recurring_expenses r
         WHERE r.user_id = :u AND r.is_active = 1
     ");
@@ -976,6 +1032,10 @@ function expandRecurringTransactions(PDO $conn, int $userId): void {
             (user_id, category_id, amount, description, type, transaction_date, notes, recurring_id)
         VALUES (:u, :c, :a, :d, :t, :td, :n, :rid)
     ");
+    $mark = $conn->prepare("
+        UPDATE recurring_expenses SET last_generated_date = :d
+        WHERE id = :id AND user_id = :u AND (last_generated_date IS NULL OR last_generated_date < :d2)
+    ");
 
     foreach ($rows as $r) {
         $start = DateTimeImmutable::createFromFormat('Y-m-d', (string)$r['start_date']);
@@ -986,9 +1046,9 @@ function expandRecurringTransactions(PDO $conn, int $userId): void {
         if ($endLimit && $endLimit < $today) continue;
         $upTo = $endLimit && $endLimit < $today ? $endLimit : $today;
 
-        // Punto desde donde empezar a generar: día siguiente a last_date,
-        // o el propio start_date si nunca se generó nada.
-        if ($r['last_date']) {
+        // Punto desde donde empezar a generar: día siguiente a la última fecha
+        // generada (aunque el usuario la haya borrado), o start_date si nunca se generó nada.
+        if ($r['last_date'] && $r['last_date'] !== '1000-01-01') {
             $cursor = DateTimeImmutable::createFromFormat('Y-m-d', (string)$r['last_date']);
             if (!$cursor) continue;
             $cursor = nextRecurringDate($cursor, $r['frequency'], $start);
@@ -1010,8 +1070,13 @@ function expandRecurringTransactions(PDO $conn, int $userId): void {
                 ':n'   => 'Generado automáticamente desde gasto fijo',
                 ':rid' => (int)$r['id'],
             ]);
+            $generated = $cursor->format('Y-m-d');
             $cursor = nextRecurringDate($cursor, (string)$r['frequency'], $start);
             $i++;
+        }
+        if (isset($generated)) {
+            $mark->execute([':d' => $generated, ':d2' => $generated, ':id' => (int)$r['id'], ':u' => $userId]);
+            unset($generated);
         }
     }
 }
@@ -1376,6 +1441,10 @@ function requireAuth(PDO $conn): callable {
         try { closeFinancialPeriods($conn, (int)$user['user_id']); } catch (Throwable $e) {
             error_log('[closeFinancialPeriods] ' . $e->getMessage());
         }
+        // Después de los cierres: la transferencia lleva fecha del periodo en curso.
+        try { applyAutoSavings($conn, (int)$user['user_id']); } catch (Throwable $e) {
+            error_log('[applyAutoSavings] ' . $e->getMessage());
+        }
         return $handler->handle($request->withAttribute('user', $user));
     };
 }
@@ -1413,6 +1482,7 @@ $app->get('/', function (Request $request, Response $response) {
             'POST /savings-goals             {name,target_amount,target_date?,description?,color?}',
             'PUT  /savings-goals/{id}',
             'POST /savings-goals/{id}/contribute  {amount, scope?: month|historical}',
+            'POST /savings/transfer             {amount, direction: to_savings|to_spending}',
             'DELETE /savings-goals/{id}',
             'GET  /budgets?month_year=YYYY-MM',
             'POST /budgets                   {amount,month_year,category_id?,reset_day?}',
@@ -1907,6 +1977,11 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 unset($_periodStartCache[$uid]);
                 $conn->prepare("DELETE FROM monthly_closures WHERE user_id = :u")->execute([':u' => $uid]);
                 closeFinancialPeriods($conn, $uid);
+                // El ahorro automático de este mes ya se hizo: el periodo nuevo no lo repite.
+                $conn->prepare("
+                    UPDATE users SET auto_savings_period = GREATEST(auto_savings_period, :ps)
+                    WHERE id = :u AND auto_savings_period IS NOT NULL
+                ")->execute([':ps' => currentPeriodStart($conn, $uid), ':u' => $uid]);
             }
             $conn->commit();
         } catch (Throwable $e) {
@@ -2171,7 +2246,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $sql = "
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
-                   t.payment_method, t.recurring_id, t.goal_id, t.scope,
+                   t.payment_method, t.recurring_id, t.goal_id, t.scope, t.transfer,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t
@@ -2255,6 +2330,10 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (!validScope($scope)) {
             return jsonResponse($response, ['error'=>true,'message'=>'Scope inválido'], 400);
         }
+        // A "Mis ahorros" solo se llega con una transferencia desde el saldo del mes.
+        if ($scope === 'historical') {
+            return jsonResponse($response, ['error'=>true,'message'=>'Los movimientos van al saldo del mes. Para ahorrar, usa una transferencia.'], 400);
+        }
 
         if ($categoryId !== null) {
             if (!userCanUseCategory($conn, (int)$jwt['user_id'], $categoryId)) {
@@ -2275,7 +2354,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
 
         $sel = $conn->prepare("
             SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
-                   t.payment_method, t.recurring_id, t.goal_id, t.scope,
+                   t.payment_method, t.recurring_id, t.goal_id, t.scope, t.transfer,
                    t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
                    t.created_at, t.updated_at
             FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
@@ -2291,9 +2370,13 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
     $group->put('/transactions/{id}', function (Request $request, Response $response, array $args) use ($conn) {
         $jwt = $request->getAttribute('user');
         $id  = (int)$args['id'];
-        $check = $conn->prepare("SELECT id FROM transactions WHERE id = :id AND user_id = :u");
+        $check = $conn->prepare("SELECT id, transfer FROM transactions WHERE id = :id AND user_id = :u");
         $check->execute([':id'=>$id, ':u'=>(int)$jwt['user_id']]);
-        if (!$check->fetch()) return jsonResponse($response, ['error'=>true,'message'=>'Transacción no encontrada'], 404);
+        $current = $check->fetch(PDO::FETCH_ASSOC);
+        if (!$current) return jsonResponse($response, ['error'=>true,'message'=>'Transacción no encontrada'], 404);
+        if ((int)$current['transfer'] > 0) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Una transferencia no se edita: bórrala y haz otra.'], 409);
+        }
 
         $data = $request->getParsedBody() ?? [];
         $fields = []; $params = [':id'=>$id];
@@ -2349,6 +2432,9 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             if (!validScope($sc) || $sc === '') {
                 return jsonResponse($response, ['error'=>true,'message'=>'Scope inválido'], 400);
             }
+            if ($sc === 'historical') {
+                return jsonResponse($response, ['error'=>true,'message'=>'Para mover dinero a "Mis ahorros", usa una transferencia.'], 400);
+            }
             // Comprobar si la tx está ligada a una meta.
             $isGoalTx = $conn->prepare("SELECT goal_id FROM transactions WHERE id = :id");
             $isGoalTx->execute([':id' => $id]);
@@ -2367,6 +2453,41 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $stmt = $conn->prepare("UPDATE transactions SET ".implode(', ', $fields)." WHERE id = :id");
         $stmt->execute($params);
         return jsonResponse($response, ['success'=>true]);
+    });
+
+    // Transferencia entre "Saldo del mes" y "Mis ahorros" (lo único que mueve dinero a ahorro).
+    $group->post('/savings/transfer', function (Request $request, Response $response) use ($conn) {
+        $uid  = (int)$request->getAttribute('user')['user_id'];
+        $data = $request->getParsedBody() ?? [];
+        $direction = $data['direction'] ?? '';
+        if (!in_array($direction, ['to_savings', 'to_spending'], true)) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Dirección no válida'], 400);
+        }
+        $amount = is_numeric($data['amount'] ?? null) ? round((float)$data['amount'], 2) : 0.0;
+        if ($amount <= 0 || $amount > 9999999999.99) {
+            return jsonResponse($response, ['error'=>true,'message'=>'Importe inválido'], 400);
+        }
+        $toSavings = $direction === 'to_savings';
+        $available = round($toSavings ? currentPeriodAvailable($conn, $uid) : historicalAvailable($conn, $uid), 2);
+        if ($amount > $available) {
+            $pool = $toSavings ? 'el saldo del mes' : 'Mis ahorros';
+            return jsonResponse($response, [
+                'error' => true,
+                'message' => 'Solo hay ' . number_format(max(0, $available), 2, ',', '.') . " disponibles en $pool.",
+                'available' => $available,
+            ], 400);
+        }
+        $id = insertSavingsTransfer($conn, $uid, $direction, $amount, date('Y-m-d'), 1);
+        $st = $conn->prepare("
+            SELECT t.id, t.amount, t.description, t.type, t.transaction_date, t.notes,
+                   t.payment_method, t.recurring_id, t.goal_id, t.scope, t.transfer,
+                   t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
+                   t.created_at, t.updated_at
+            FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
+            WHERE t.id = :id AND t.user_id = :u
+        ");
+        $st->execute([':id' => $id, ':u' => $uid]);
+        return jsonResponse($response, ['success' => true, 'transaction' => $st->fetch(PDO::FETCH_ASSOC)], 201);
     });
 
     $group->delete('/transactions/{id}', function (Request $request, Response $response, array $args) use ($conn) {
@@ -3582,8 +3703,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         $hist = $conn->prepare("
             SELECT
                 COALESCE((SELECT SUM(mc.surplus) FROM monthly_closures mc WHERE mc.user_id = :u), 0)
-              + COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
-              - COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
+              + " . HISTORICAL_TX_SQL . "
                 AS net_total,
               COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='month'
                                  AND t.transaction_date >= :ps1 AND t.transaction_date < :pe1 THEN t.amount ELSE 0 END), 0)

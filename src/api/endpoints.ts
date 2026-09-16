@@ -101,8 +101,8 @@ export const transactionsApi = {
     category_id?: number | null;
     payment_method?: PaymentMethod | null;
     notes?: string | null;
-    /** Fase 4: 'month' (default) afecta al saldo del mes, 'historical' a "Mis ahorros". */
-    scope?: 'month' | 'historical';
+    /** Siempre 'month': a "Mis ahorros" solo se llega con `savingsApi.transfer` (el servidor rechaza 'historical'). */
+    scope?: 'month';
   }) =>
     http
       .post<{ success: true; transaction: Transaction }>('/transactions', data)
@@ -186,6 +186,16 @@ export type GoalContributeResponse = {
   success: true;
   goal: { id: number; current_amount: number; target_amount: number };
   available_balance: number;
+};
+
+export type TransferDirection = 'to_savings' | 'to_spending';
+
+export const savingsApi = {
+  /** Pasa dinero entre "Saldo del mes" y "Mis ahorros" (400 con `available` si no hay bastante). */
+  transfer: (amount: number, direction: TransferDirection) =>
+    http
+      .post<{ success: true; transaction: Transaction }>('/savings/transfer', { amount, direction })
+      .then((r) => r.data.transaction),
 };
 
 export const goalsApi = {

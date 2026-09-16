@@ -108,7 +108,12 @@ quedan en "Próximamente".
 
 ## 🧪 Calidad / deuda técnica (transversal a la v2)
 
-- ✅ **Lote 2026-09-16 (2)** (pendiente de deploy): logs de la API en `backend/logs/` (semanales), manejador de errores en JSON, panel de uso con monitoreo anónimo propio y prueba de correo, cambio de moneda con conversión, errores claros al exportar y en recibos cuando falta un módulo nativo. **Hace falta un build EAS nuevo**: los de producción (27/05) no incluyen expo-file-system, expo-print, expo-sharing ni expo-image-picker.
+- ✅ **Lote 2026-09-17** (pendiente de deploy: SQL §14 + FTP `index.php` + **build EAS** por expo-notifications): cuenta de ahorro solo vía transferencias (manual y automática = objetivo mensual), cuotas de gastos fijos borradas que no vuelven, recordatorios locales configurables (`src/config/reminders.ts`), calendario de hábitos con celdas iguales, "Definir objetivo" abre Ingresos y ahorro. Pendiente: filtro "Mis ahorros" de Movimientos no muestra las transferencias (son `scope='month'`); si los avisos locales no llegan en algún móvil (Xiaomi/Huawei), valorar FCM + cron.
+
+- ✅ **Lote 2026-09-16 (2)** (pendiente de deploy): logs de la API en `backend/logs/` (semanales), manejador de errores en JSON, panel de uso con monitoreo anónimo propio y prueba de correo, cambio de moneda con conversión, errores claros al exportar y en recibos cuando falta un módulo nativo. **Hace falta un build EAS nuevo**: los de producción (27/05) no incluyen expo-file-system, expo-print, expo-sharing ni expo-image-picker. Tras la revisión de seguridad y QA: PDF en web desde iframe y con hasta 500 movimientos, conversión en decimal exacto, cobro semanal conservado al cambiar de moneda, CSV sin fórmulas, tope de filas en `usage_daily`, un envío de uso por disparador, errores con CORS.
+- **BUG (prioridad alta, ya existía) — cierres con movimientos de fecha pasada**: un movimiento anterior al primer cierre nunca entra en ningún cierre (`pendingPeriodStart` solo avanza desde el último), y crear/editar/borrar en un periodo ya cerrado no recalcula su cierre. "Saldo del mes" + "Mis ahorros" deja de cuadrar con el total (QA: 1358,93 + 7049,30 frente a 10.284,79) y al cambiar de moneda "Mis ahorros" salta al rehacerse los cierres. Propuesta: al tocar un movimiento `scope='month'` con fecha anterior al periodo actual, borrar los cierres desde esa fecha y dejar que `closePendingPeriods` los rehaga (como al cambiar el día de cobro).
+- **CSV para Excel en español**: con separador `,` Excel (es-ES) lo abre en una sola columna. Opción: `;` + coma decimal (decisión de producto; Sheets y Numbers abren ambos).
+- **Monitoreo (menores)**: en web, dos pestañas pueden enviar la misma cola (eventos duplicados); si otro usuario inicia sesión en el mismo dispositivo, envía los eventos pendientes del anterior.
 - **`monthly_closures.surplus` es `DECIMAL(10,2)`** mientras los importes son `DECIMAL(12,2)`: con importes enormes, el `INSERT IGNORE` del cierre recorta el valor sin avisar. Ampliar a `DECIMAL(14,2)`.
 - **Zona horaria de PHP**: las fechas del periodo usan la zona por defecto del servidor (probablemente UTC), no la del usuario (`users.timezone`).
 
@@ -116,7 +121,7 @@ quedan en "Próximamente".
 - **Seguridad — propuestas pendientes de decisión (revisión 2026-09-16)**:
   - **Alta (ya existía):** `clientIp()` usa el primer valor de `X-Forwarded-For` (falsificable): el límite por IP no protege. Mirar qué llega en producción (`REMOTE_ADDR` y `X-Forwarded-For`) y usar `REMOTE_ADDR` o el último valor del proxy.
   - **Media:** invalidar los JWT anteriores al cambiar o restablecer la contraseña (`users.password_changed_at` + comprobar `iat`; `PUT /me/password` debería devolver un token nuevo).
-  - **Media (ya existía):** toma de cuenta preparada de antemano: al enlazar Google con una cuenta de email sin verificar, anular la contraseña existente (las cuentas antiguas tendrían que usar la recuperación).
+  - ✅ **Alta:** toma de cuenta preparada de antemano: al enlazar Google con una cuenta de email sin verificar se anula la contraseña existente (2026-09-16). Sin revocación de JWT (punto anterior), el token que ya tuviera el atacante vale hasta 7 días.
   - **Media (ya existía):** webhook de RevenueCat: ignorar eventos `SANDBOX` en producción (salvo flag) y tratar `TRANSFER`.
   - **Baja:** comprobar que `litespeed_finish_request` existe en Hostinger (si no, el SMTP se ejecuta antes de responder).
   - **Baja:** mínimo de contraseña 8 caracteres; migrar `AppSidebar`, `BalanceHero` y `FloatingTabBar` a props `aria-*`.

@@ -293,7 +293,7 @@
 
                 <h3>🔧 Datos técnicos básicos</h3>
                 <ul>
-                    <li>IP, navegador/sistema, y registros técnicos mínimos necesarios para seguridad, diagnóstico y operación. En los registros la IP se guarda recortada (sin su último bloque) y los emails, enmascarados.</li>
+                    <li>IP, navegador/sistema, y registros técnicos mínimos necesarios para seguridad, diagnóstico y operación. En los logs técnicos la IP se guarda recortada (sin su último bloque) y los emails, enmascarados. Para frenar ataques, los intentos de acceso (inicio de sesión, registro, recuperación de contraseña y códigos de verificación) guardan la IP completa y el email durante unos días.</li>
                     <li>Estadísticas de uso <strong>anónimas y agregadas</strong>: cuántas veces se abren las pantallas y se usan las funciones, por día y plataforma. No se asocian a tu cuenta ni a tu dispositivo.</li>
                 </ul>
 
@@ -366,6 +366,7 @@
                     <li><strong>Borrado de cuenta</strong>: eliminamos o anonimizamos datos en un plazo razonable tras tu solicitud.</li>
                     <li><strong>Backups</strong>: pueden mantenerse por ciclos limitados antes de su purga automática.</li>
                     <li><strong>Logs técnicos</strong>: se guardan en ficheros semanales y se borran automáticamente pasadas unas 12 semanas.</li>
+                    <li><strong>Control de intentos de acceso</strong>: la IP y el email de cada intento se conservan unos 7 días y después se borran.</li>
                     <li><strong>Estadísticas de uso</strong>: al ser anónimas y agregadas, pueden conservarse sin límite.</li>
                 </ul>
             </section>

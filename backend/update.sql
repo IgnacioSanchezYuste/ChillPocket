@@ -1,5 +1,5 @@
 -- =====================================================
--- ChillPocket API · update.sql (migraciones acumuladas §5–§13)
+-- ChillPocket API · update.sql (migraciones acumuladas §5–§14)
 -- Idempotente: se puede ejecutar varias veces sin romper nada.
 -- Probado en MariaDB 10.3+ / MySQL 8.0+.
 -- =====================================================
@@ -378,5 +378,42 @@ CREATE TABLE IF NOT EXISTS `currency_conversions` (
     KEY `idx_user` (`user_id`),
     CONSTRAINT `currency_conversions_user_fk` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 14) Cuenta de ahorro y gastos fijos ------------------------------
+-- 14a) Hasta qué fecha se generó cada gasto fijo. Antes se deducía de la última
+--      transacción generada: al borrarla, se volvía a crear en la siguiente petición.
+SET @col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'recurring_expenses' AND COLUMN_NAME = 'last_generated_date'
+);
+SET @sql = IF(@col_exists = 0, "ALTER TABLE `recurring_expenses` ADD COLUMN `last_generated_date` DATE NULL", 'SELECT 1');
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+UPDATE `recurring_expenses` r
+SET r.`last_generated_date` = (
+    SELECT MAX(t.`transaction_date`) FROM `transactions` t
+    WHERE t.`recurring_id` = r.`id` AND t.`user_id` = r.`user_id`
+)
+WHERE r.`last_generated_date` IS NULL;
+
+-- 14b) Transferencias entre "Saldo del mes" y "Mis ahorros": 0 = movimiento normal,
+--      1 = transferencia manual, 2 = ahorro automático mensual. Son filas scope='month'
+--      (gasto = a ahorro, ingreso = desde ahorro) que "Mis ahorros" suma con signo contrario.
+SET @col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transactions' AND COLUMN_NAME = 'transfer'
+);
+SET @sql = IF(@col_exists = 0, "ALTER TABLE `transactions` ADD COLUMN `transfer` TINYINT(1) NOT NULL DEFAULT 0", 'SELECT 1');
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+-- 14c) Último periodo (su fecha de inicio) con ahorro automático aplicado.
+--      Quien ya tenía objetivo empieza a transferir en el próximo periodo, no hoy.
+SET @col_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'auto_savings_period'
+);
+SET @sql = IF(@col_exists = 0, "ALTER TABLE `users` ADD COLUMN `auto_savings_period` DATE NULL", 'SELECT 1');
+PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+UPDATE `users` SET `auto_savings_period` = CURDATE()
+WHERE `auto_savings_period` IS NULL AND `savings_goal_monthly` > 0;
 
 COMMIT;

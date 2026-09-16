@@ -159,6 +159,7 @@ export const DashboardScreen: React.FC = () => {
   }, [toast, refreshAll]);
 
   const handleDuplicateTx = useCallback((tx: Transaction) => {
+    if (tx.transfer) return; // una transferencia no se duplica como gasto normal
     const prefill: TransactionPrefill = {
       amount: String(tx.amount),
       description: tx.description,
@@ -167,7 +168,6 @@ export const DashboardScreen: React.FC = () => {
       category_id: tx.category_id,
       notes: tx.notes,
       date: todayISO(),
-      scope: tx.scope ?? 'month',
     };
     setEditing(null);
     setDuplicatePrefill(prefill);

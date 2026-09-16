@@ -22,7 +22,7 @@ Recopilamos solo la informacion necesaria para prestar el servicio:
    - Fechas y descripciones de movimientos.
 
 3. **Datos tecnicos basicos**
-   - IP, navegador/sistema, y registros tecnicos minimos necesarios para seguridad, diagnostico y operacion. En los registros la IP se guarda recortada (sin su ultimo bloque) y los emails, enmascarados.
+   - IP, navegador/sistema, y registros tecnicos minimos necesarios para seguridad, diagnostico y operacion. En los logs tecnicos la IP se guarda recortada (sin su ultimo bloque) y los emails, enmascarados. Para frenar ataques, los intentos de acceso (inicio de sesion, registro, recuperacion de contrasena y codigos de verificacion) guardan la IP completa y el email durante unos dias.
    - Estadisticas de uso anonimas y agregadas: cuantas veces se abren las pantallas y se usan las funciones, por dia y plataforma. No se asocian a tu cuenta ni a tu dispositivo.
 
 4. **Datos de soporte**
@@ -66,6 +66,7 @@ Clausulas Contractuales Tipo) para proteger tu informacion conforme al RGPD.
 - **Borrado de cuenta**: eliminamos o anonimizamos datos en un plazo razonable tras tu solicitud.
 - **Backups**: pueden mantenerse por ciclos limitados antes de su purga automatica.
 - **Logs tecnicos**: se guardan en ficheros semanales y se borran automaticamente pasadas unas 12 semanas.
+- **Control de intentos de acceso**: la IP y el email de cada intento se conservan unos 7 dias y despues se borran.
 - **Estadisticas de uso**: al ser anonimas y agregadas, pueden conservarse sin limite.
 
 ## 8. Derechos del usuario (RGPD)

@@ -30,7 +30,7 @@ no es fiable (ver ROADMAP → seguridad).
 |---|---|---|---|---|
 | POST | `/auth/register` | `{name,email,password,currency?}` | `{success,token,user}` | bcrypt. |
 | POST | `/auth/login` | `{email,password}` | `{success,token,user}` | |
-| POST | `/auth/google` | `{id_token}` | `{success,token,user,is_new}` | Verifica con `tokeninfo` contra `GOOGLE_ALLOWED_CLIENT_IDS`. Busca por `google_sub`, si no por email (enlaza solo si la cuenta no tiene otro `google_sub`; si lo tiene → **409**), si no crea. `is_new=true` → el front lanza el onboarding. Marca el email como verificado. |
+| POST | `/auth/google` | `{id_token}` | `{success,token,user,is_new}` | Verifica con `tokeninfo` contra `GOOGLE_ALLOWED_CLIENT_IDS`. Busca por `google_sub`, si no por email (enlaza solo si la cuenta no tiene otro `google_sub`; si lo tiene → **409**), si no crea. `is_new=true` → el front lanza el onboarding. Marca el email como verificado. Al enlazar con una cuenta cuyo email **no** estaba verificado, invalida su contraseña (pudo registrarla otra persona); el dueño entra con Google o usa "¿Olvidaste tu contraseña?". |
 | POST | `/auth/password/forgot` | `{email}` | `{success,message}` | Respuesta idéntica exista o no la cuenta. Límite 3 solicitudes / 15 min (IP y email). Envía un código de 6 dígitos (15 min). |
 | POST | `/auth/password/reset` | `{email,code,new_password}` | `{success,token,user}` | Consume el código (5 intentos, uso único), cambia la contraseña, verifica el email, limpia límites de login y avisa por correo. **Inicia sesión.** Fallos → 400 neutro + límite de intentos. |
 
@@ -44,7 +44,7 @@ is_premium, is_web_allowed`.
 | Método | Ruta | Body | Respuesta |
 |---|---|---|---|
 | GET | `/me` | — | `{user}` |
-| PUT | `/me` | `{name?,currency?,timezone?,theme?,avatar_url?,income_reference?,income_payday?,savings_goal_monthly?}` | `{success,user}` |
+| PUT | `/me` | `{name?,currency?,timezone?,theme?,avatar_url?,income_reference?,income_payday?,savings_goal_monthly?}` | `{success,user}` `currency` solo de `SUPPORTED_CURRENCIES` (400 si no, salvo que sea la actual) |
 | PUT | `/me/password` | `{current_password,new_password}` | `{success}` + correo de aviso |
 | POST | `/me/email/send-verification` | — | `{success, already_verified?}` · límite 3 / 15 min |
 | POST | `/me/email/verify` | `{code}` | `{success,user}` · 400 si el código no vale |
@@ -71,10 +71,11 @@ is_premium, is_web_allowed`.
 | Método | Ruta | Body / Query |
 |---|---|---|
 | GET | `/transactions` | `?from,to,type,category_id,payment_method,search,amount_min,amount_max,limit,offset` → `{transactions}` (incluye `scope`, `receipt_path`). `from` pasa por `enforceHistoryLimit`. **No** filtra por `scope` (se hace en cliente). |
-| POST | `/transactions` | `{amount,description,type,transaction_date,category_id?,payment_method?,notes?,scope?}` → `{success,transaction}`. `scope` = `month` por defecto. |
-| PUT | `/transactions/{id}` | `Partial<Transaction>`. Cambiar `scope` de una tx con `goal_id` → **409**. |
-| DELETE | `/transactions/{id}` | Borra también el fichero de recibo si existe. |
-| GET | `/transactions/export` | `?format=csv` (obligatorio). Gate `features.export` (403 si no). CSV con BOM UTF-8, `fputcsv`, `Cache-Control: no-store`, tope 50.000 filas (`X-ChillPocket-Truncated: true`). Respeta `enforceHistoryLimit`. |
+| POST | `/transactions` | `{amount,description,type,transaction_date,category_id?,payment_method?,notes?,scope?}` → `{success,transaction}`. `scope` = `month` (con `historical` → **400**: a "Mis ahorros" solo se llega con `POST /savings/transfer`). |
+| PUT | `/transactions/{id}` | `Partial<Transaction>`. Cambiar `scope` de una tx con `goal_id` → **409**; pasar a `historical` → 400; editar una transferencia (`transfer > 0`) → **409** (se borra y se rehace). |
+| POST | `/savings/transfer` | `{amount, direction: to_savings\|to_spending}` → **201** `{success, transaction}`. Crea una fila `scope='month'`, `transfer=1`, categoría sistema "Ahorro" (gasto hacia ahorro, ingreso desde ahorro), con fecha de hoy. Valida contra `currentPeriodAvailable()` / `historicalAvailable()` (400 con `available`). |
+| DELETE | `/transactions/{id}` | Borra también el fichero de recibo si existe. Una cuota de gasto fijo o un ahorro automático borrados no se vuelven a generar. |
+| GET | `/transactions/export` | `?format=csv` (obligatorio). Gate `features.export` (403 si no). CSV con BOM UTF-8, `fputcsv`, `Cache-Control: no-store`, tope 50.000 filas (`X-ChillPocket-Truncated: true`). Respeta `enforceHistoryLimit`. Separador `,`, escape RFC 4180 (`escape ''`); las celdas de texto que empiezan por `= + - @` o tabulador llevan un `'` delante (sin fórmulas al abrirlo en Excel/Sheets). |
 
 ### Recibos (protegidas — solo Plus, feature `receipt_photos`)
 | Método | Ruta | Notas |
@@ -147,7 +148,7 @@ Si alguno falla, se registra en `error_log` y la petición continúa.
 ## Uso de la app (protegida) — monitoreo anónimo
 | Método | Ruta | Notas |
 |---|---|---|
-| POST | `/usage` | `{day, platform, app_version?, events: {nombre: n}, first_today?: [nombres]}`. `day` entre hoy−7 y hoy+1; `platform` ios/android/web; nombres `/^[A-Za-z0-9_.:-]{1,64}$/` (se guardan en minúsculas), máx. 60, cuentas enteras 1-500. Un solo INSERT multi-fila con `ON DUPLICATE KEY UPDATE` en `usage_daily`. `first_today` suma 1 usuario único. No guarda `user_id` ni `app_version`. Tope `USAGE_MAX_ROWS_PER_DAY` (1000 filas por día): superado, solo suman los nombres que ya existen ese día (los nuevos se descartan con 200). |
+| POST | `/usage` | `{day, platform, app_version?, events: {nombre: n}, first_today?: [nombres]}`. `day` entre hoy−8 y hoy+1 (el día local del cliente puede ir por detrás); `platform` ios/android/web; nombres `/^[A-Za-z0-9_.:-]{1,64}$/` (se guardan en minúsculas), máx. 60, cuentas enteras 1-500. Un solo INSERT multi-fila con `ON DUPLICATE KEY UPDATE` en `usage_daily`. `first_today` suma 1 usuario único. No guarda `user_id` ni `app_version`. Tope `USAGE_MAX_ROWS_PER_DAY` (1000 filas por día): superado, solo suman los nombres que ya existen ese día (los nuevos se descartan con 200). |
 
 ## Administración (protegidas, `is_admin`)
 `is_admin` = email en `ADMIN_EMAILS` **y** verificado. Si no, 403.
@@ -164,7 +165,7 @@ solo acepta tipos finitos entre 0,0001 y 100.000 con fecha `YYYY-MM-DD`. cURL co
 | Método | Ruta | Notas |
 |---|---|---|
 | GET | `/currency/rate` | `?to=USD` → `{from (moneda del usuario), to, rate, date, source}`. 400 si no soportada, 502 si no hay cambio. |
-| POST | `/me/currency` | `{currency, rate}`: convierte **todos** los importes del usuario con el cambio actual (transactions, recurring_expenses, budgets, savings_goals, users.income_reference/savings_goal_monthly), recalcula `monthly_closures` y registra la conversión en `currency_conversions`. Todo en una transacción con la fila del usuario bloqueada. Si `rate` no coincide con el del servidor → 409 `rate_changed` (con el nuevo). Misma moneda → no hace nada. Límite 5 al día por cuenta (`checkEmailDailyLimit`, no por IP) → 429. Importe que no cabe → 500 "demasiado grande" y nada cambia. → `{success, user, rate, converted}`. |
+| POST | `/me/currency` | `{currency, rate}`: convierte **todos** los importes del usuario con el cambio actual (transactions, recurring_expenses, budgets, savings_goals, users.income_reference/savings_goal_monthly), recalcula `monthly_closures` y registra la conversión en `currency_conversions`. Todo en una transacción con la fila del usuario bloqueada. Si `rate` no coincide con el del servidor → 409 `rate_changed` (con el nuevo). Misma moneda → no hace nada. Límite 5 al día por cuenta (`checkEmailDailyLimit`, no por IP) → 429. Importe que no cabe → 500 "demasiado grande" y nada cambia. Multiplica en decimal exacto (`CAST(:k AS DECIMAL(18,8))`, el cambio siempre en notación decimal) y redondea a 2 decimales; el objetivo de una meta nunca baja de 0,01 (CHECK). → `{success, user, rate, converted}`. |
 - `PUT /me` con una `currency` distinta y datos guardados → 409 `currency_conversion_required` (solo cambiaría el símbolo). Sin datos (tutorial de un usuario nuevo) sí la cambia.
 
 ## Logs (`backend/logs/`)
@@ -177,8 +178,11 @@ solo acepta tipos finitos entre 0,0001 y 100.000 con fecha `YYYY-MM-DD`. cURL co
 - Nunca: contraseñas, tokens, códigos ni cuerpos. Emails enmascarados (`i***@dominio`), IP sin el último bloque.
   `maskEmail` devuelve `***` si el texto no es un email válido (alguien que escribe la contraseña en el campo del
   email); además, `clean()` enmascara cualquier email que aparezca dentro de un mensaje (respuestas SMTP, errores de BD, rutas).
-- Errores: `addErrorMiddleware` con manejador propio → JSON neutro (404 "Ruta no encontrada", 405, 500) y la excepción
-  (clase, mensaje, fichero:línea) en el log. Sin base de datos → 503 JSON.
+- Si `backend/logs` no se puede escribir, los avisos y errores van al log del servidor (`error_log`, prefijo `[chillpocket]`).
+- Errores: un único `addErrorMiddleware` con manejador propio → JSON neutro con cabeceras CORS (404 "Ruta no encontrada",
+  405, 500) y la excepción (clase, mensaje, fichero:línea) en el log. Sin base de datos → 503 JSON.
+- Query string: un middleware descarta los parámetros que no son texto (`?from[]=x`); ningún endpoint usa listas.
+- `Mailer`: si falla la conexión o el TLS, el mensaje incluye el aviso de PHP (p. ej. certificado que no coincide).
 - Para diagnosticar el correo en producción: panel de uso → "Enviar correo de prueba" y líneas `mail` del log.
 
 ## Seguridad (resumen)

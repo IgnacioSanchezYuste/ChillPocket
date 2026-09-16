@@ -61,14 +61,17 @@ apertura y envía los contadores de uso en lotes (ver "Monitoreo de uso").
     verificado abre `VerifyEmailSheet` y continúa la compra al verificar),
     `SettingsScreen` (nombre, verificar email, contraseña —con enlace a recuperación por código—, "Ingresos y
     ahorro", moneda —abre `CurrencyChangeSheet`—, tema, bloqueo, plan, exportar CSV/PDF —errores dentro de la
-    hoja; el CSV lleva BOM para Excel—, ver tutorial, "Administración → Panel de uso" si `user.is_admin`, logout).
+    hoja; el CSV lleva BOM para Excel; el PDF pide hasta 500 movimientos en una sola petición, avisa si no están todos y en web
+    se imprime desde un iframe oculto (`printHtmlOnWeb`: `expo-print` en web imprimiría la pantalla)—, ver tutorial, "Administración → Panel de uso" si `user.is_admin`, logout).
   - `UsageScreen` (ruta `Usage`, solo `user.is_admin`; si no, `EmptyState` y ninguna petición): periodo 7/30/90
     (`adminApi.usage`, una petición por periodo mientras la pantalla vive, sin polling; pull-to-refresh fuerza),
     resumen (usuarios, nuevos, activos, % verificados, planes), "Pantallas más vistas" / "Acciones más usadas"
     con barras, plataformas, aperturas diarias (`Sparkline`) y "Enviar correo de prueba" (`adminApi.mailTest`,
     muestra destinatario o el `message` SMTP y las claves `SMTP_*` que faltan).
 - `modals/`: `TransactionSheet` (crear/editar, `prefill`, tipo de pago en cuadrícula 3×2 solo para gastos,
-  selector de `scope`, foto de recibo; "Ver Plus" cierra el formulario antes de navegar),
+  foto de recibo; "Ver Plus" cierra el formulario antes de navegar; tercer botón "Ahorro" = transferencia
+  Gastos ⇄ Ahorro con `savingsApi.transfer` y el disponible de cada saldo; una transferencia existente solo se borra;
+  ya no hay selector de `scope`: todo va al saldo del mes),
   `RecurringSheet`, `GoalSheet` (aportar desde el mes o desde ahorros), `SecuritySetupSheet`,
   `VerifyEmailSheet` (código de 6 dígitos + reenviar), `PasswordResetSheet`, `FinancialProfileSheet`
   (frecuencia, ingreso, día de cobro con `WheelPicker`, objetivo; avisa si recalcula los cierres),
@@ -96,6 +99,15 @@ apertura y envía los contadores de uso en lotes (ver "Monitoreo de uso").
   accesible como `adjustable`), `PasswordResetForm` (pedir código → código + nueva contraseña).
 - Por plataforma (Metro elige `.web`/`.native`; el `.tsx` base es el stub de tipos):
   `GoogleButton` (+ `GoogleButtonView`), `AuthImage` (web: fetch + blob; nativo: `Image` con cabeceras).
+
+## Recordatorios locales (`src/notifications/reminders.ts`)
+- `expo-notifications` (módulo nativo nuevo: requiere build EAS; carga protegida, en web no hace nada).
+- Config en `src/config/reminders.ts` (`enabled`, `times` HH:MM, `days`, `messages`). Al abrir la app, volver a
+  primer plano, cambiar la sesión o terminar el tutorial se cancelan y se programan de nuevo **desde mañana**
+  (`reminderSlots`, con tests; máx. 60 por el límite de iOS), así que solo suenan los días sin abrir la app.
+  Permiso: se pide la primera vez con sesión y fuera del tutorial. Al cerrar sesión solo se cancelan.
+- Analítica → "Meta de ahorro": "Definir objetivo" y "Editar" abren `FinancialProfileSheet` (el objetivo es el
+  ahorro automático mensual). El calendario de `SpendingHabits` usa celdas de 1/7 de ancho.
 
 ## Hooks y utilidades
 - `src/hooks/`: `useCountUp` (animación de cifras), `useGoogleAuth`, `useCooldown` (cuenta atrás de "Reenviar"),
@@ -127,7 +139,8 @@ apertura y envía los contadores de uso en lotes (ver "Monitoreo de uso").
   `/^[a-z0-9_.:-]{1,64}$/`: minúsculas y sin tildes). Con props solo se usa la propiedad prevista por evento
   (`upgrade_clicked` → `feature`/`plan`, `purchase_*` → `plan`, `plan_limit_reached` → `entity`); nunca importes,
   textos libres, emails ni errores. Persistido en AsyncStorage `@chillpocket:usage` (parseo tolerante).
-- Envío con `usageApi.send`, un lote por día pendiente (máx. 60 claves, cuentas topadas a 500; lo demás espera):
+- Envío con `usageApi.send`: **una petición por disparador**, el día pendiente más antiguo (máx. 60 claves, cuentas
+  topadas a 500; lo demás espera al siguiente disparador):
   al pasar a segundo plano; al arrancar / aparecer la sesión si quedan días anteriores; con ≥ 40 pendientes como
   mucho cada 5 min. Siempre: con sesión, ≥ 1 min entre intentos (fallidos incluidos), días de > 7 días descartados.
   Fallo de red/401 → se conserva hasta el siguiente disparador; 400/413/422 → se descarta el lote;

@@ -698,7 +698,7 @@ const SavingsGoalStep: React.FC<SavingsGoalStepProps> = ({
       subtitle="Cada euro que ahorras hoy es libertad mañana. Ponlo fácil con un objetivo claro."
     >
       <MoneyInput
-        label="Objetivo de ahorro mensual"
+        label="Ahorro automático mensual"
         value={savingsText}
         onChangeText={onSavingsChange}
         palette={palette}
@@ -743,7 +743,7 @@ const SavingsGoalStep: React.FC<SavingsGoalStepProps> = ({
       <View style={[styles.infoBox, { backgroundColor: palette.accentSoft, borderColor: palette.accent }]}>
         <Ionicons name="information-circle-outline" size={18} color={palette.accent} />
         <Text variant="caption" tone="accent" style={{ flex: 1 }}>
-          Puedes cambiar este objetivo en cualquier momento desde Ajustes.
+          Cada día de cobro esta cantidad pasa sola a Mis ahorros. Puedes cambiarla cuando quieras en Ajustes → Ingresos y ahorro.
         </Text>
       </View>
     </Step>

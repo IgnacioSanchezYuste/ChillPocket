@@ -1,7 +1,7 @@
 # ChillPocket — Modelo de datos (MySQL/MariaDB)
 
 > Columnas: `src/api/types.ts` (frontend) + `backend/u204231532_Finanzas.sql` (esquema base, **desactualizado**)
-> + `backend/update.sql` (migraciones idempotentes §5–§12, fuente real de lo añadido después).
+> + `backend/update.sql` (migraciones idempotentes §5–§14, fuente real de lo añadido después).
 > Si cambias el esquema: migración en `update.sql`, tipos en `types.ts` y este documento, en el mismo cambio.
 
 ## Migraciones de `update.sql`
@@ -16,6 +16,7 @@
 | 11 | `user_entitlements.plan_id` (FK a `plans`) + fila base `manual` (gratis) para cada usuario. |
 | 12 | `users.email_verified_at` + tabla `email_codes`; cuentas de Google marcadas como verificadas. |
 | 13 | `usage_daily` (monitoreo anónimo), `exchange_rates` (caché de cambios), `currency_conversions` (registro). |
+| 14 | `recurring_expenses.last_generated_date` (con relleno), `transactions.transfer`, `users.auto_savings_period` (relleno con hoy para quien ya tenía objetivo: su primer ahorro automático llega en el próximo periodo). |
 
 > Probado en MariaDB 10.4 local: el script completo se puede ejecutar varias veces. La BD de producción es
 > **MariaDB 11.8**: nada de sintaxis exclusiva de MySQL (`CAST(... AS JSON)`, etc.).
@@ -30,7 +31,8 @@
 - Modelo dual (§8):
   - `income_reference DECIMAL(10,2) NULL`: salario neto declarado.
   - `income_payday TINYINT NULL` (1-31): día de cobro; define el periodo financiero. `NULL` → mes natural.
-  - `savings_goal_monthly DECIMAL(10,2) NULL`: objetivo mensual de ahorro.
+  - `savings_goal_monthly DECIMAL(10,2) NULL`: objetivo mensual de ahorro = importe del ahorro automático.
+  - `auto_savings_period DATE NULL` (§14): inicio del último periodo con ahorro automático aplicado.
   - Se escriben con `PUT /me` (tutorial, "Ingresos y ahorro" en Ajustes y `useFinancialProfileSync`). El
     cliente guarda además su versión local, con la frecuencia y el importe tal cual (semanal incluido).
 - `email_verified_at DATETIME NULL` (§12): se rellena al verificar con código, al restablecer la contraseña o al
@@ -50,7 +52,8 @@
 - `goal_id` → `savings_goals(id)` **ON DELETE SET NULL**. Con `goal_id`, el `scope` es inmutable (PUT → 409).
 - `scope ENUM('month','historical') DEFAULT 'month'`:
   - `month` → cuenta para "Saldo del mes" y, al cerrarse el periodo, para su `surplus`.
-  - `historical` → va directo a "Mis ahorros". Lo elige el usuario en `TransactionSheet`.
+  - `historical` → va directo a "Mis ahorros". Solo filas antiguas: desde §14 la API rechaza crearlas.
+- `transfer TINYINT` (§14): 0 normal, 1 transferencia manual, 2 ahorro automático (ver modelo dual).
 - `amount DECIMAL(12,2)` (igual en `recurring_expenses`, `budgets` y `savings_goals`); `users.income_reference`,
   `users.savings_goal_monthly` y `monthly_closures.surplus` son `DECIMAL(10,2)`.
 - `receipt_path VARCHAR(255) NULL`: p. ej. `Images/42/abc123.jpg`. Solo lo escriben los endpoints `/receipt`.
@@ -60,6 +63,7 @@
 `id, user_id, name, amount, type ('expense'|'income'), frequency ('weekly'|'monthly'|'yearly'),
  start_date, end_date, is_active (0|1), notes, category_id`
 - Sirve para gastos **e ingresos** recurrentes (la nómina es un ingreso recurrente).
+- `last_generated_date DATE NULL` (§14): última fecha generada; la generación sigue desde ahí.
 
 ### `budgets`
 `id, user_id, amount (límite), month_year ('YYYY-MM'), reset_day (1-28), category_id (NULL = global), auto_renew (0|1)`
@@ -117,14 +121,27 @@ de una cuenta. Para deshacer uno: convertir de vuelta (con el cambio de ese mome
 ## Moneda de la cuenta
 - `users.currency` es la moneda de **todos** los importes del usuario. No hay importes en otras monedas.
 - Cambiarla con datos exige `POST /me/currency`, que multiplica todos los importes por el cambio del BCE del día
-  (`ROUND(x * rate, 2)`) y recalcula los cierres.
+  (`ROUND(x * rate, 2)` en decimal exacto: con el cambio como texto MariaDB opera en DOUBLE y redondea mal los
+  ,xx5) y recalcula los cierres. El perfil local del móvil se convierte con `convertLocalProfile` (el ingreso
+  mensual lo toma del servidor; el semanal se escala y `reconcileLocalProfile` tolera la diferencia de céntimos).
+  Tras convertir, `current_amount` de una meta puede diferir 1 céntimo de la suma de sus aportaciones.
 
 ## Modelo dual "Saldo del mes / Mis ahorros"
 - **Saldo del mes** = ingresos − gastos del periodo en curso, solo `scope='month'` → `summary.period_balance`
   (no `summary.balance`, que es del mes natural). En el cliente, `monthBalanceFigures()` elige uno u otro.
   Comprobación: `period_balance + net_total_historical` = todo el dinero registrado.
-- **Mis ahorros** (`net_total_historical`) = `SUM(monthly_closures.surplus)` + transacciones `scope='historical'`.
+- **Mis ahorros** (`net_total_historical`) = `SUM(monthly_closures.surplus)` + transacciones `scope='historical'`
+  + transferencias (gasto `transfer>0` suma, ingreso `transfer>0` resta; SQL común en `HISTORICAL_TX_SQL`).
   **No incluye el periodo en curso**, para no contarlo dos veces.
+- **Solo se entra en "Mis ahorros" desde el saldo del mes** (decisión 2026-09-17): los movimientos nuevos son siempre
+  `scope='month'`; las filas `historical` antiguas se conservan. Mover dinero = transferencia (`transactions.transfer`:
+  1 manual, 2 automática), una fila `scope='month'` en la categoría sistema "Ahorro": al cerrar el periodo baja el
+  sobrante y la transferencia lo devuelve a ahorros, así que el total no cambia. Cuentan en la analítica como las
+  aportaciones a metas (gasto "Ahorro"; la retirada, como ingreso). El sobrante del mes sigue pasando a ahorros al cerrar.
+- **Ahorro automático** = `users.savings_goal_monthly` (el "objetivo de ahorro mensual"): `applyAutoSavings()`
+  (en `requireAuth`, tras los cierres) crea una transferencia `transfer=2` con fecha de inicio del periodo, una vez
+  por periodo (`users.auto_savings_period`; si el usuario la borra no se repite). Cambiar el importe se aplica en el
+  siguiente cobro; cambiar el día de cobro no la duplica. No comprueba saldo: el saldo del mes puede quedar negativo.
 - Periodo: del día `payday` del mes anterior al `payday-1` del actual (con `LAST_DAY` si el mes no tiene ese día);
   sin payday → mes natural. Lógica espejo en cliente: `src/utils/financialPeriod.ts` (con tests).
 - `closeFinancialPeriods()` se ejecuta en `requireAuth`, cierra hasta **24 periodos por petición** con
@@ -140,7 +157,8 @@ Ahorrar **mueve dinero de verdad**:
 
 ## Generación perezosa de recurrentes
 - `expandRecurringTransactions()` corre en cada petición autenticada e inserta, de forma idempotente, las
-  transacciones que ya tocan hasta hoy. **No hay cron**: si el usuario no entra, no se generan.
+  transacciones que ya tocan hasta hoy. Sigue desde `recurring_expenses.last_generated_date` (o la última cuota, si es
+  posterior): así una cuota borrada no se vuelve a crear. **No hay cron**: si el usuario no entra, no se generan.
 - Los cargos futuros del periodo no existen aún como transacción; el cliente los reserva con
   `pendingRecurringExpense()` para el presupuesto diario.
 
