@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { transactionsApi, recurringApi } from '../api/endpoints';
 import { useDataStore } from './useDataStore';
+// Importación circular (useAuthStore también importa este store): solo se usa
+// dentro de funciones, nunca al cargar el módulo.
+import { useAuthStore } from './useAuthStore';
+import { usePreferencesStore } from './usePreferencesStore';
+import { track } from '../utils/analytics';
 
 const DONE_KEY = '@chillpocket:onboarding_done_v1';
 // Clave separada para los IDs demo: sobrevive crasheos entre creación y borrado.
@@ -174,7 +179,8 @@ export const useOnboardingStore = create<State>((set, get) => ({
   demoRecurringIds: [],
   skipCreationPhases: false,
 
-  start: (initial) =>
+  start: (initial) => {
+    track('onboarding', 'start');
     set({
       active: true,
       phase: 'welcome',
@@ -183,7 +189,8 @@ export const useOnboardingStore = create<State>((set, get) => ({
       openSheet: null,
       skipCreationPhases: false,
       draft: { ...emptyDraft, ...initial },
-    }),
+    });
+  },
 
   setDraft: (patch) => set({ draft: { ...get().draft, ...patch } }),
   setPersonalizeStep: (n) => set({ personalizeStep: n }),
@@ -275,6 +282,7 @@ export const useOnboardingStore = create<State>((set, get) => ({
   },
 
   finish: async () => {
+    track('onboarding', 'finish');
     // Borrar demo data ANTES de marcar done.
     await get().deleteDemoData();
     try {
@@ -286,6 +294,7 @@ export const useOnboardingStore = create<State>((set, get) => ({
   },
 
   skipAll: async () => {
+    track('onboarding', 'skip');
     // Borrar demo data ANTES de marcar done.
     await get().deleteDemoData();
     try {
@@ -300,6 +309,11 @@ export const useOnboardingStore = create<State>((set, get) => ({
     // Si hay datos reales, omitir las fases de creación para no duplicarlos.
     const { transactions, recurring } = useDataStore.getState();
     const hasRealData = transactions.length > 0 || recurring.length > 0;
+    // Parte de lo que el usuario ya tiene: repetir el tutorial no debe vaciar su
+    // perfil financiero (se guarda en el servidor al terminar) ni su moneda.
+    const user = useAuthStore.getState().user;
+    const prefs = usePreferencesStore.getState();
+    track('onboarding', 'start');
     set({
       active: true,
       phase: 'welcome',
@@ -307,6 +321,16 @@ export const useOnboardingStore = create<State>((set, get) => ({
       tourIndex: 0,
       openSheet: null,
       skipCreationPhases: hasRealData,
+      draft: {
+        ...emptyDraft,
+        name: user?.name ?? '',
+        currency: user?.currency ?? emptyDraft.currency,
+        goal: (prefs.goal as FinanceGoal | null) ?? null,
+        incomeFrequency: (prefs.incomeFrequency as IncomeFrequency | null) ?? null,
+        incomeAmount: prefs.incomeAmount,
+        incomePayday: prefs.incomePayday,
+        savingsGoalMonthly: prefs.savingsGoalMonthly,
+      },
     });
   },
 

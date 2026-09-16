@@ -14,9 +14,9 @@ import { useToast } from '../../components/Toast';
 import { apiError, API_URL } from '../../api/http';
 import { validateEmail, validatePassword } from '../../utils/validators';
 
-type Props = { onGoToRegister: () => void };
+type Props = { onGoToRegister: () => void; onForgotPassword: (email: string) => void };
 
-export const LoginScreen: React.FC<Props> = ({ onGoToRegister }) => {
+export const LoginScreen: React.FC<Props> = ({ onGoToRegister, onForgotPassword }) => {
   const { palette } = useTheme();
   const { login, loading } = useAuthStore();
   const toast = useToast();
@@ -74,6 +74,14 @@ export const LoginScreen: React.FC<Props> = ({ onGoToRegister }) => {
                 </Pressable>
               }
             />
+            <Pressable
+              onPress={() => onForgotPassword(email.trim())}
+              hitSlop={8}
+              style={styles.forgot}
+              accessibilityRole="button"
+            >
+              <Text variant="label" tone="accent" weight="semibold">¿Olvidaste tu contraseña?</Text>
+            </Pressable>
             <Button title="Iniciar sesión" loading={loading} onPress={onSubmit} size="lg" />
 
             <View style={styles.dividerRow}>
@@ -110,6 +118,10 @@ const styles = StyleSheet.create({
   },
   logo: {
     marginBottom: spacing.sm,
+  },
+  forgot: {
+    alignSelf: 'flex-end',
+    marginTop: -spacing.sm,
   },
   footer: {
     marginTop: spacing.xxl,

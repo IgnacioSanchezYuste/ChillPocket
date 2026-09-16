@@ -24,6 +24,7 @@ import { InvestmentsScreen } from '../screens/main/InvestmentsScreen';
 import { PaywallScreen } from '../screens/main/PaywallScreen';
 import { DayDetailScreen } from '../screens/main/DayDetailScreen';
 import { NetWorthScreen } from '../screens/main/NetWorthScreen';
+import { UsageScreen } from '../screens/main/UsageScreen';
 
 export type AppStackParamList = {
   Tabs: undefined;
@@ -36,6 +37,8 @@ export type AppStackParamList = {
   NetWorth: undefined;
   Paywall: { feature?: string } | undefined;
   DayDetail: { date: string };
+  /** Panel de uso (solo administradores). */
+  Usage: undefined;
 };
 
 const Stack = createNativeStackNavigator<AppStackParamList>();
@@ -122,6 +125,7 @@ const AppStack: React.FC = () => (
     <Stack.Screen name="NetWorth" component={NetWorthScreen} />
     <Stack.Screen name="Paywall" component={PaywallScreen} />
     <Stack.Screen name="DayDetail" component={DayDetailScreen} />
+    <Stack.Screen name="Usage" component={UsageScreen} />
   </Stack.Navigator>
 );
 

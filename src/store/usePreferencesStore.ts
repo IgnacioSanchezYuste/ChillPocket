@@ -56,6 +56,8 @@ type State = Prefs & {
     savingsGoalMonthly?: number | null;
   }) => void;
   setSeenBalanceSwipeTooltip: (seen: boolean) => void;
+  /** Al cerrar sesión: el perfil financiero es de la cuenta, no del dispositivo. */
+  clearProfilePrefs: () => void;
 };
 
 async function persist(snap: Prefs) {
@@ -113,6 +115,18 @@ export const usePreferencesStore = create<State>((set, get) => ({
     if (incomeAmount !== undefined) patch.incomeAmount = incomeAmount;
     if (incomePayday !== undefined) patch.incomePayday = incomePayday;
     if (savingsGoalMonthly !== undefined) patch.savingsGoalMonthly = savingsGoalMonthly;
+    set(patch);
+    persist(snapshot(get(), patch));
+  },
+
+  clearProfilePrefs: () => {
+    const patch: Partial<Prefs> = {
+      goal: null,
+      incomeFrequency: null,
+      incomeAmount: null,
+      incomePayday: null,
+      savingsGoalMonthly: null,
+    };
     set(patch);
     persist(snapshot(get(), patch));
   },

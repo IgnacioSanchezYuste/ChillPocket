@@ -1,4 +1,5 @@
 import type { Transaction, Category, User } from '../api/types';
+import { formatMoney } from './format';
 
 /** Escapa caracteres especiales HTML para que no rompan el markup del PDF. */
 function escapeHtml(s: string): string {
@@ -10,13 +11,22 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** Formatea un importe con signo y moneda, p.ej. "+1.234,56 €". */
+/** Importe con signo en la moneda de la cuenta (mismo formato que la app), p. ej. "+1234,56 €". */
 function formatAmount(amount: number, type: 'expense' | 'income', currency = 'EUR'): string {
-  const symbol = currency === 'USD' ? '$' : currency === 'GBP' ? '£' : '€';
-  const abs = Math.abs(amount).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const sign = type === 'income' ? '+' : '-';
-  return `${sign}${abs} ${symbol}`;
+  return `${sign}${formatMoney(Math.abs(amount), currency)}`;
 }
+
+/** La API devuelve los DECIMAL como texto ("45.50"): sin esto, `+=` concatena. */
+const amountOf = (tx: Transaction): number => {
+  const n = Number(tx.amount);
+  return Number.isFinite(n) ? n : 0;
+};
+
+export type ExportHtmlOptions = {
+  /** El listado no es el historial completo (límite de la petición). */
+  truncated?: boolean;
+};
 
 /** Convierte 'YYYY-MM-DD' → 'Junio 2026'. */
 function monthLabel(monthYear: string): string {
@@ -44,6 +54,7 @@ export function buildExportHtml(
   transactions: Transaction[],
   _categories: Category[],
   user: Pick<User, 'name' | 'email' | 'currency'> | null,
+  options: ExportHtmlOptions = {},
 ): string {
   const currency = user?.currency ?? 'EUR';
   const today = new Date().toISOString().slice(0, 10);
@@ -71,9 +82,10 @@ export function buildExportHtml(
         const cat = escapeHtml(tx.category_name ?? 'Sin categoria');
         const desc = escapeHtml(tx.description);
         const typeLabel = tx.type === 'income' ? 'Ingreso' : 'Gasto';
-        const amountStr = formatAmount(tx.amount, tx.type, currency);
-        if (tx.type === 'income') totalIncome += tx.amount;
-        else totalExpense += tx.amount;
+        const amount = amountOf(tx);
+        const amountStr = formatAmount(amount, tx.type, currency);
+        if (tx.type === 'income') totalIncome += amount;
+        else totalExpense += amount;
         return `
         <tr>
           <td>${escapeHtml(formatDate(tx.transaction_date))}</td>
@@ -169,6 +181,7 @@ export function buildExportHtml(
     <p>ChillPocket</p>
     ${userName ? `<p>${userName}${userEmail ? ` &lt;${userEmail}&gt;` : ''}</p>` : ''}
     <p>Generado el ${escapeHtml(today)}</p>
+    ${options.truncated ? '<p>Incluye solo los movimientos más recientes. Para el historial completo, exporta en CSV.</p>' : ''}
   </header>
 
   ${monthSections || '<p style="color:#94a3b8;margin-top:16px;">No hay transacciones para exportar.</p>'}

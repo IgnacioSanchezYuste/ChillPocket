@@ -19,6 +19,8 @@ import { Text } from '../../components/Text';
 import { ProgressBar } from '../../components/ProgressBar';
 import { AuthImage } from '../../components/AuthImage';
 import { PremiumLock } from '../../components/PremiumLock';
+import { useOnboardingStore } from '../../store/useOnboardingStore';
+import { isMissingNativeModule, MISSING_NATIVE_MESSAGE } from '../../utils/nativeModules';
 import { useDataStore } from '../../store/useDataStore';
 import { usePreferencesStore } from '../../store/usePreferencesStore';
 import { useBilling } from '../../store/useBillingStore';
@@ -26,6 +28,7 @@ import { useToast } from '../../components/Toast';
 import { transactionsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { confirmDelete } from '../../utils/confirm';
+import { track } from '../../utils/analytics';
 import { todayISO } from '../../utils/format';
 import { spacing, radius } from '../../theme/spacing';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -114,6 +117,7 @@ export const TransactionSheet: React.FC<Props> = ({
   const navigation = useNavigation<any>();
   const { hasFeature } = useBilling();
   const hasReceipts = hasFeature('receipt_photos');
+  const onboardingActive = useOnboardingStore((s) => s.active);
 
   // --- Form state ---
   const [type, setType] = useState<'expense' | 'income'>('expense');
@@ -254,8 +258,8 @@ export const TransactionSheet: React.FC<Props> = ({
       // Si había un recibo de servidor y el usuario elige uno nuevo,
       // marcamos que hay que reemplazar (deleteReceipt + upload)
       setRemoveServerReceipt(false);
-    } catch {
-      toast.error('No se pudo abrir la galería');
+    } catch (e) {
+      toast.error(isMissingNativeModule(e) ? MISSING_NATIVE_MESSAGE : 'No se pudo abrir la galería');
     }
   }, [receiptState, toast]);
 
@@ -276,8 +280,8 @@ export const TransactionSheet: React.FC<Props> = ({
       }
       setReceiptState({ phase: 'local', asset });
       setRemoveServerReceipt(false);
-    } catch {
-      toast.error('No se pudo abrir la cámara');
+    } catch (e) {
+      toast.error(isMissingNativeModule(e) ? MISSING_NATIVE_MESSAGE : 'No se pudo abrir la cámara');
     }
   }, [receiptState, toast]);
 
@@ -302,6 +306,7 @@ export const TransactionSheet: React.FC<Props> = ({
       try {
         const form = buildReceiptFormData(asset);
         await transactionsApi.uploadReceipt(txId, form);
+        track('receipt_uploaded');
         revokeLocalAsset(asset);
         localAssetRef.current = null;
         setReceiptState({ phase: 'server' });
@@ -341,6 +346,7 @@ export const TransactionSheet: React.FC<Props> = ({
           notes: notes.trim() || null,
           ...(scopeChanged ? { scope } : {}),
         });
+        track('transaction_updated');
 
         // Luego gestionar el recibo
         if (removeServerReceipt && receiptState.phase === 'idle') {
@@ -372,6 +378,8 @@ export const TransactionSheet: React.FC<Props> = ({
           notes: notes.trim() || null,
           scope,
         });
+        // Los movimientos demo del tutorial no cuentan como uso real.
+        if (!onboardingActive) track('transaction_created', type);
 
         // Persistir últimas elecciones
         setLastCategory(type, categoryId);
@@ -402,6 +410,7 @@ export const TransactionSheet: React.FC<Props> = ({
     setSaving(true);
     try {
       await transactionsApi.remove(editing.id);
+      track('transaction_deleted');
       toast.success('Eliminada');
       await refreshAll(true);
       onSaved?.(null);
@@ -418,8 +427,9 @@ export const TransactionSheet: React.FC<Props> = ({
   // ---------------------------------------------------------------------------
 
   const ReceiptBlock = () => {
-    // Free: teaser con candado
+    // Free: teaser con candado (no durante el tutorial: "Ver Plus" lo interrumpiría)
     if (!hasReceipts) {
+      if (onboardingActive) return null;
       return (
         <View style={{ gap: spacing.xs }}>
           <Text variant="label" tone="secondary">Foto del ticket</Text>
@@ -428,6 +438,7 @@ export const TransactionSheet: React.FC<Props> = ({
             planLabel="Ver Plus"
             variant="banner"
             feature="receipt_photos"
+            onNavigate={onClose}
           />
         </View>
       );
@@ -658,7 +669,7 @@ export const TransactionSheet: React.FC<Props> = ({
             type === 'expense' && { backgroundColor: typeAccent },
           ]}
           accessibilityLabel="Marcar como gasto"
-          accessibilityState={{ selected: type === 'expense' }}
+          aria-selected={type === 'expense'}
         >
           <Ionicons
             name="arrow-down-outline"
@@ -680,7 +691,7 @@ export const TransactionSheet: React.FC<Props> = ({
             type === 'income' && { backgroundColor: typeAccent },
           ]}
           accessibilityLabel="Marcar como ingreso"
-          accessibilityState={{ selected: type === 'income' }}
+          aria-selected={type === 'income'}
         >
           <Ionicons
             name="arrow-up-outline"
@@ -736,60 +747,67 @@ export const TransactionSheet: React.FC<Props> = ({
         </ScrollView>
       </View>
 
-      {/* Fecha + Método de pago en 2 columnas */}
-      <View style={styles.twoCol}>
-        <View style={{ flex: 1 }}>
-          <Input
-            label="Fecha"
-            placeholder="YYYY-MM-DD"
-            value={date}
-            onChangeText={setDate}
-            autoCapitalize="none"
-          />
-        </View>
-        {type === 'expense' && (
-          <View style={{ flex: 1, gap: spacing.xs }}>
-            <Text variant="label" tone="secondary">Tipo de pago</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={[styles.chips, { paddingVertical: 2 }]}
-            >
-              {PAYMENT_METHODS.map((pm) => {
-                const active = paymentMethod === pm.value;
-                return (
-                  <Pressable
-                    key={pm.value}
-                    onPress={() => setPaymentMethod(active ? null : pm.value)}
+      {/* Fecha */}
+      <Input
+        label="Fecha"
+        placeholder="YYYY-MM-DD"
+        value={date}
+        onChangeText={setDate}
+        autoCapitalize="none"
+      />
+
+      {/* Tipo de pago (solo gastos): cuadrícula 3×2, todo a la vista y sin scroll */}
+      {type === 'expense' && (
+        <View style={{ gap: spacing.sm }}>
+          <Text variant="label" tone="secondary">Tipo de pago</Text>
+          <View style={styles.pmGrid} accessibilityRole="radiogroup">
+            {PAYMENT_METHODS.map((pm) => {
+              const active = paymentMethod === pm.value;
+              return (
+                <Pressable
+                  key={pm.value}
+                  onPress={() => setPaymentMethod(active ? null : pm.value)}
+                  style={({ pressed }) => [
+                    styles.pmTile,
+                    {
+                      backgroundColor: active ? palette.accentSoft : palette.bgElevated,
+                      borderColor: active ? palette.accent : palette.borderSubtle,
+                      opacity: pressed ? 0.8 : 1,
+                    },
+                  ]}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`Tipo de pago: ${pm.label}`}
+                  aria-checked={active}
+                >
+                  <View
                     style={[
-                      styles.pmChip,
-                      {
-                        backgroundColor: active ? palette.accentSoft : palette.bgElevated,
-                        borderColor: active ? palette.accent : palette.borderSubtle,
-                      },
+                      styles.pmIcon,
+                      { backgroundColor: active ? palette.accent : palette.bgSurface },
                     ]}
-                    accessibilityLabel={`Método de pago: ${pm.label}`}
-                    accessibilityState={{ selected: active }}
                   >
                     <Ionicons
                       name={pm.icon}
-                      size={13}
-                      color={active ? palette.accent : palette.textSecondary}
+                      size={18}
+                      color={active ? palette.textInverted : palette.textSecondary}
                     />
-                    <Text
-                      variant="caption"
-                      weight={active ? 'semibold' : 'medium'}
-                      tone={active ? 'accent' : 'secondary'}
-                    >
-                      {pm.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+                  </View>
+                  <Text
+                    variant="caption"
+                    weight={active ? 'semibold' : 'medium'}
+                    tone={active ? 'accent' : 'secondary'}
+                    align="center"
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                  >
+                    {pm.shortLabel}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
-        )}
-      </View>
+        </View>
+      )}
 
       {/* Scope — selector dual (Saldo del mes / Mis ahorros) */}
       <View style={{ gap: spacing.xs }}>
@@ -837,14 +855,29 @@ export const TransactionSheet: React.FC<Props> = ({
 
 const styles = StyleSheet.create({
   chips: { gap: spacing.sm, paddingVertical: 4 },
-  pmChip: {
+  pmGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  pmTile: {
+    flexGrow: 1,
+    flexBasis: '30%',
+    minHeight: 72,
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radius.md,
     borderWidth: 1,
+  },
+  pmIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   infoBanner: {
     flexDirection: 'row',
@@ -870,11 +903,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: radius.md - 2,
     minHeight: 44,
-  },
-  twoCol: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    alignItems: 'flex-start',
   },
   // Receipt
   receiptButtons: {

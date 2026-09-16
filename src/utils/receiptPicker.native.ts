@@ -5,7 +5,24 @@
  * Retorna un ReceiptAsset listo para construir el FormData multipart,
  * o null si el usuario cancela o deniega permisos.
  */
-import * as ImagePicker from 'expo-image-picker';
+import type * as ImagePickerModule from 'expo-image-picker';
+import { MISSING_NATIVE_MESSAGE } from './nativeModules';
+
+// Carga perezosa y protegida: un build sin expo-image-picker no debe romper la
+// app al abrir el formulario; solo falla (con un mensaje claro) al usarlo.
+let pickerModule: typeof ImagePickerModule | null | undefined;
+function imagePicker(): typeof ImagePickerModule {
+  if (pickerModule === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      pickerModule = require('expo-image-picker') as typeof ImagePickerModule;
+    } catch {
+      pickerModule = null;
+    }
+  }
+  if (!pickerModule) throw new Error(MISSING_NATIVE_MESSAGE);
+  return pickerModule;
+}
 
 export type ReceiptAsset = {
   /** URI local del archivo (file:// en nativo, data:/blob: en web). */
@@ -42,6 +59,7 @@ export function buildReceiptFormData(asset: ReceiptAsset): FormData {
 
 /** Solicita permiso de galería y retorna el asset elegido o null. */
 export async function pickFromGallery(): Promise<ReceiptAsset | null> {
+  const ImagePicker = imagePicker();
   const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (status !== 'granted') return null;
 
@@ -64,6 +82,7 @@ export async function pickFromGallery(): Promise<ReceiptAsset | null> {
 
 /** Solicita permiso de cámara y retorna el asset fotografiado o null. */
 export async function pickFromCamera(): Promise<ReceiptAsset | null> {
+  const ImagePicker = imagePicker();
   const { status } = await ImagePicker.requestCameraPermissionsAsync();
   if (status !== 'granted') return null;
 

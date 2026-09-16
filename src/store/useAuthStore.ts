@@ -5,6 +5,7 @@ import { TOKEN_KEY } from '../api/http';
 import { clearGoogleSession } from '../utils/googleSession';
 import { useOnboardingStore } from './useOnboardingStore';
 import { useDataStore } from './useDataStore';
+import { usePreferencesStore } from './usePreferencesStore';
 import { identifyPurchases, signOutPurchases } from '../billing/purchases';
 import { secureGet, secureSet, secureDel, migrateToSecure } from '../utils/secureStorage';
 import type { User } from '../api/types';
@@ -20,6 +21,8 @@ type AuthState = {
   login: (email: string, password: string) => Promise<void>;
   loginWithGoogle: (idToken: string) => Promise<void>;
   register: (data: { name: string; email: string; password: string; currency?: string }) => Promise<void>;
+  /** Cambia la contraseña con el código recibido por email e inicia sesión. */
+  resetPassword: (data: { email: string; code: string; newPassword: string }) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   setUser: (user: User | null | undefined) => void;
@@ -49,7 +52,7 @@ async function clearAuthStorage() {
 
 // Lanza un error con detalle de qué viene mal, para depurar despliegues
 // con backend antiguo o respuestas contaminadas con HTML/warnings PHP.
-function assertAuthResponse(res: any, label: 'login' | 'register'): asserts res is { token: string; user: User } {
+function assertAuthResponse(res: any, label: 'login' | 'register' | 'reset'): asserts res is { token: string; user: User } {
   if (res == null) {
     console.error(`[auth/${label}] respuesta vacía`, res);
     throw new Error('El servidor no devolvió datos');
@@ -149,6 +152,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  resetPassword: async ({ email, code, newPassword }) => {
+    set({ loading: true });
+    try {
+      const res = await authApi.resetPassword({ email: email.trim(), code: code.trim(), new_password: newPassword });
+      assertAuthResponse(res, 'reset');
+      await secureSet(TOKEN_KEY, res.token);
+      await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
+      set({ token: res.token, user: res.user });
+      identifyPurchases(res.user.id).catch(() => {});
+    } finally {
+      set({ loading: false });
+    }
+  },
+
   loginWithGoogle: async (idToken: string) => {
     set({ loading: true });
     try {
@@ -173,6 +190,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Limpia los datos financieros en memoria para que otro usuario que inicie
     // sesión en el mismo dispositivo no vea nada del anterior.
     try { useDataStore.getState().reset(); } catch { /* noop */ }
+    // El perfil financiero vive en el servidor: se recupera al volver a entrar.
+    try { usePreferencesStore.getState().clearProfilePrefs(); } catch { /* noop */ }
     signOutPurchases().catch(() => {});
     set({ token: null, user: null });
   },

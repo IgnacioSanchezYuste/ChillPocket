@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { View, ScrollView, Pressable, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,12 @@ import { useBilling } from '../../store/useBillingStore';
 import { useSecurityStore } from '../../store/useSecurityStore';
 import { useDataStore } from '../../store/useDataStore';
 import { SecuritySetupSheet } from '../modals/SecuritySetupSheet';
+import { VerifyEmailSheet } from '../modals/VerifyEmailSheet';
+import { PasswordResetSheet } from '../modals/PasswordResetSheet';
+import { FinancialProfileSheet } from '../modals/FinancialProfileSheet';
+import { CurrencyChangeSheet } from '../modals/CurrencyChangeSheet';
+import { isMissingNativeModule, MISSING_NATIVE_MESSAGE } from '../../utils/nativeModules';
+import type { SupportedCurrency } from '../../api/types';
 import { useTheme } from '../../theme/ThemeProvider';
 import { spacing } from '../../theme/spacing';
 import { Text } from '../../components/Text';
@@ -24,11 +30,36 @@ import { apiError } from '../../api/http';
 import { confirm } from '../../utils/confirm';
 import { validateName, validatePassword } from '../../utils/validators';
 import { buildExportHtml } from '../../utils/exportHtml';
+import { formatMoney, todayISO } from '../../utils/format';
+import { track } from '../../utils/analytics';
 
 // Las libs nativas de file system / sharing / print no se importan directamente
 // en el módulo para no romper el bundler web. Se cargan de forma dinámica dentro
 // de las funciones que sólo se ejecutan en plataformas nativas.
-// En web usamos APIs DOM estándar (Blob, URL.createObjectURL, Print.printAsync).
+// En web usamos APIs DOM estándar (Blob, URL.createObjectURL, iframe + print).
+
+/** Tope de `GET /transactions?limit=` en el servidor. */
+const PDF_MAX_ROWS = 500;
+const PRINT_FRAME_ATTR = 'data-chillpocket-print';
+
+/** Web: abre el diálogo de imprimir / guardar como PDF con un HTML propio. */
+function printHtmlOnWeb(html: string): void {
+  document.querySelectorAll(`iframe[${PRINT_FRAME_ATTR}]`).forEach((el) => el.remove());
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute(PRINT_FRAME_ATTR, '');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  iframe.onload = () => {
+    const win = iframe.contentWindow;
+    // Algunos navegadores emiten antes un load de about:blank.
+    if (!win || win.location.href !== 'about:srcdoc') return;
+    win.addEventListener('afterprint', () => setTimeout(() => iframe.remove(), 500), { once: true });
+    win.focus();
+    win.print();
+  };
+  iframe.srcdoc = html;
+  document.body.appendChild(iframe);
+}
 
 export const SettingsScreen: React.FC = () => {
   const { palette, preference, setPreference } = useTheme();
@@ -47,6 +78,24 @@ export const SettingsScreen: React.FC = () => {
 
   const [nameSheetOpen, setNameSheetOpen] = useState(false);
   const [pwdSheetOpen, setPwdSheetOpen] = useState(false);
+  const [resetSheetOpen, setResetSheetOpen] = useState(false);
+  const [verifySheetOpen, setVerifySheetOpen] = useState(false);
+  const [profileSheetOpen, setProfileSheetOpen] = useState(false);
+
+  // Dos Modal a la vez fallan en iOS: se cierra uno antes de abrir el otro.
+  const openResetFromPassword = () => {
+    setPwdSheetOpen(false);
+    setTimeout(() => setResetSheetOpen(true), 350);
+  };
+
+  const profileSummary = (() => {
+    if (!user) return '';
+    const parts: string[] = [];
+    if (user.income_payday) parts.push(user.income_payday === 31 ? 'Cobro fin de mes' : `Cobro día ${user.income_payday}`);
+    else if (user.income_reference) parts.push(`Ingreso ${formatMoney(user.income_reference, user.currency)}/mes`);
+    if (user.savings_goal_monthly) parts.push(`Ahorro ${formatMoney(user.savings_goal_monthly, user.currency)}`);
+    return parts.join(' · ') || 'Configurar';
+  })();
   const [name, setName] = useState(user?.name || '');
   const [savingName, setSavingName] = useState(false);
 
@@ -59,15 +108,23 @@ export const SettingsScreen: React.FC = () => {
   const [exportSheetOpen, setExportSheetOpen] = useState(false);
   const [exportingCsv, setExportingCsv] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportError, setExportError] = useState('');
+  const exportOpenRef = useRef(false);
+  exportOpenRef.current = exportSheetOpen;
+  const reportExportError = (e: unknown, fallback: string) => {
+    const message = isMissingNativeModule(e) ? MISSING_NATIVE_MESSAGE : apiError(e, fallback);
+    if (exportOpenRef.current) setExportError(message);
+    else toast.error(message);
+  };
+  const openExportSheet = () => {
+    setExportError('');
+    setExportSheetOpen(true);
+  };
 
-  const onCurrencyChange = async (currency: 'EUR' | 'USD' | 'GBP') => {
-    try {
-      const updated = await authApi.updateMe({ currency });
-      if (updated) setUser(updated);
-      toast.success('Moneda actualizada');
-    } catch (e) {
-      toast.error(apiError(e));
-    }
+  // Cambiar la moneda convierte todos los importes (se confirma en la hoja).
+  const [currencyTarget, setCurrencyTarget] = useState<SupportedCurrency | null>(null);
+  const onCurrencyChange = (currency: SupportedCurrency) => {
+    if (currency !== user?.currency) setCurrencyTarget(currency);
   };
 
   const onSaveName = async () => {
@@ -118,8 +175,12 @@ export const SettingsScreen: React.FC = () => {
     }
     setExportingCsv(true);
     try {
-      const csv = await transactionsApi.exportCsv();
-      const filename = `chillpocket-${new Date().toISOString().slice(0, 10)}.csv`;
+      const raw = await transactionsApi.exportCsv();
+      // El servidor manda BOM, pero al decodificar la respuesta se pierde; sin él,
+      // Excel abre los acentos mal.
+      const csv = raw.charCodeAt(0) === 0xfeff ? raw : `﻿${raw}`;
+      track('export', 'csv');
+      const filename = `chillpocket-${todayISO()}.csv`;
 
       if (Platform.OS === 'web') {
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -127,8 +188,13 @@ export const SettingsScreen: React.FC = () => {
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
+        a.style.display = 'none';
+        // Firefox exige el enlace en el documento, y revocar la URL en el acto
+        // puede cancelar la descarga en Safari/Firefox.
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(url);
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
         toast.success('Descarga iniciada');
         setExportSheetOpen(false);
       } else {
@@ -152,13 +218,13 @@ export const SettingsScreen: React.FC = () => {
             dialogTitle: 'Exportar CSV',
             UTI: 'public.comma-separated-values-text',
           });
-          toast.success('Exportacion lista');
+          toast.success('Exportación lista');
         } else {
-          toast.error('Compartir no esta disponible en este dispositivo');
+          setExportError('Compartir no está disponible en este dispositivo');
         }
       }
     } catch (e) {
-      toast.error(apiError(e, 'No se pudo exportar el CSV'));
+      reportExportError(e, 'No se pudo exportar el CSV');
     } finally {
       setExportingCsv(false);
     }
@@ -175,38 +241,43 @@ export const SettingsScreen: React.FC = () => {
     }
     setExportingPdf(true);
     try {
-      // Refrescamos datos para tener el snapshot más reciente.
-      await useDataStore.getState().refreshAll(true);
-
-      const { transactions, categories } = useDataStore.getState();
-      const html = buildExportHtml(transactions, categories, user ?? null);
+      // Una sola petición (cuota Hostinger) con el máximo que devuelve la API. El
+      // store solo guarda los 100 últimos: el PDF salía recortado sin avisar.
+      const transactions = await transactionsApi.list({ limit: PDF_MAX_ROWS });
+      const html = buildExportHtml(transactions, useDataStore.getState().categories, user ?? null, {
+        truncated: transactions.length >= PDF_MAX_ROWS,
+      });
+      track('export', 'pdf');
 
       if (Platform.OS === 'web') {
-        // En web printAsync abre el diálogo del navegador (Imprimir / Guardar PDF).
-        // El feedback visual es el propio diálogo del navegador.
-        const Print = await import('expo-print');
+        // expo-print en web llama a window.print() e ignora `html` (imprimiría la
+        // pantalla de Ajustes): el informe se imprime desde un iframe oculto.
         setExportSheetOpen(false);
-        await Print.printAsync({ html });
+        printHtmlOnWeb(html);
       } else {
         // Nativo: genera el PDF como archivo y abre el share sheet.
         const Print = await import('expo-print');
         const Sharing = await import('expo-sharing');
 
         const { uri } = await Print.printToFileAsync({ html, base64: false });
+        if (!(await Sharing.isAvailableAsync())) {
+          setExportError('Compartir no está disponible en este dispositivo');
+          return;
+        }
         setExportSheetOpen(false);
         await Sharing.shareAsync(uri, {
           mimeType: 'application/pdf',
           dialogTitle: 'Exportar PDF',
           UTI: 'com.adobe.pdf',
         });
-        toast.success('Exportacion lista');
+        toast.success('Exportación lista');
       }
     } catch (e) {
       // Si el usuario cancela el share sheet en iOS lanza un error silenciado:
       // sólo notificamos si el error no es una cancelación.
       const msg = e instanceof Error ? e.message : '';
       if (!msg.includes('cancel') && !msg.includes('Cancel') && !msg.includes('dismiss')) {
-        toast.error(apiError(e, 'No se pudo exportar el PDF'));
+        reportExportError(e, 'No se pudo exportar el PDF');
       }
     } finally {
       setExportingPdf(false);
@@ -234,9 +305,21 @@ export const SettingsScreen: React.FC = () => {
             <Pressable onPress={() => { setName(user?.name || ''); setNameSheetOpen(true); }}>
               <RowAction icon="person-outline" label="Nombre" value={user?.name || ''} />
             </Pressable>
-            <Row label="Email" value={user?.email || ''} />
+            {user?.email_verified === false ? (
+              <Pressable onPress={() => setVerifySheetOpen(true)} accessibilityRole="button">
+                <RowAction icon="mail-unread-outline" label="Verificar email" value={user.email} />
+              </Pressable>
+            ) : (
+              <Row label="Email" value={user?.email || ''} />
+            )}
             <Pressable onPress={() => setPwdSheetOpen(true)}>
               <RowAction icon="lock-closed-outline" label="Contraseña" value="••••••••" />
+            </Pressable>
+          </Section>
+
+          <Section title="Finanzas">
+            <Pressable onPress={() => setProfileSheetOpen(true)} accessibilityRole="button">
+              <RowAction icon="wallet-outline" label="Ingresos y ahorro" value={profileSummary} />
             </Pressable>
           </Section>
 
@@ -248,8 +331,9 @@ export const SettingsScreen: React.FC = () => {
                   { value: 'EUR', label: '€ EUR' },
                   { value: 'USD', label: '$ USD' },
                   { value: 'GBP', label: '£ GBP' },
+                  { value: 'MXN', label: '$ MXN' },
                 ]}
-                value={(user?.currency as any) || 'EUR'}
+                value={(user?.currency as SupportedCurrency) || 'EUR'}
                 onChange={onCurrencyChange}
               />
             </View>
@@ -296,11 +380,19 @@ export const SettingsScreen: React.FC = () => {
             </Pressable>
           </Section>
 
+          {user?.is_admin && (
+            <Section title="Administración">
+              <Pressable onPress={() => navigation.navigate('Usage')} accessibilityRole="button">
+                <RowAction icon="stats-chart-outline" label="Panel de uso" value="Uso de la app y correo" />
+              </Pressable>
+            </Section>
+          )}
+
           <Section title="Datos">
             <Pressable onPress={() => navigation.navigate('Categories')}>
               <RowAction icon="pricetags-outline" label="Categorías" />
             </Pressable>
-            <Pressable onPress={() => setExportSheetOpen(true)}>
+            <Pressable onPress={openExportSheet}>
               <RowAction
                 icon="download-outline"
                 label="Exportar mis datos"
@@ -358,7 +450,16 @@ export const SettingsScreen: React.FC = () => {
           onChangeText={setConfirmPwd}
           autoCapitalize="none"
         />
+        <Pressable onPress={openResetFromPassword} hitSlop={8} accessibilityRole="button" style={styles.forgotLink}>
+          <Text variant="label" tone="accent" weight="semibold">
+            ¿No recuerdas la actual? Cámbiala con un código por email
+          </Text>
+        </Pressable>
       </Sheet>
+
+      <PasswordResetSheet visible={resetSheetOpen} onClose={() => setResetSheetOpen(false)} />
+      <VerifyEmailSheet visible={verifySheetOpen} onClose={() => setVerifySheetOpen(false)} />
+      <FinancialProfileSheet visible={profileSheetOpen} onClose={() => setProfileSheetOpen(false)} />
 
       {/* Sheet de seleccion de formato de exportacion */}
       <Sheet
@@ -382,7 +483,18 @@ export const SettingsScreen: React.FC = () => {
           disabled={exportingCsv || exportingPdf}
           onPress={onExportPdf}
         />
+        {!!exportError && (
+          <Text variant="caption" tone="danger" accessibilityLiveRegion="polite">
+            {exportError}
+          </Text>
+        )}
       </Sheet>
+
+      <CurrencyChangeSheet
+        visible={currencyTarget !== null}
+        target={currencyTarget}
+        onClose={() => setCurrencyTarget(null)}
+      />
 
       <SecuritySetupSheet
         visible={securitySheetOpen}
@@ -481,6 +593,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   iconWrap: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   kv: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'space-between' },
+  forgotLink: { alignSelf: 'flex-start', paddingVertical: spacing.xs },
   exportOption: {
     flexDirection: 'row',
     alignItems: 'center',

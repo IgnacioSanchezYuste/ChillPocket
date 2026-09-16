@@ -4,11 +4,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { spacing, radius } from '../theme/spacing';
 import { Text } from './Text';
-import { formatMoney } from '../utils/format';
+import { currentMonthYear, formatMoney } from '../utils/format';
+import { monthBalanceFigures } from '../utils/balanceMode';
 import { daysBetween, nextPeriodStartFrom, pendingRecurringExpense } from '../utils/financialPeriod';
 import { usePreferencesStore } from '../store/usePreferencesStore';
 import { useBilling } from '../store/useBillingStore';
 import { useDataStore } from '../store/useDataStore';
+import { useAuthStore } from '../store/useAuthStore';
 import type { AnalyticsSummary, DailyPoint, Recurring } from '../api/types';
 
 type Props = {
@@ -73,13 +75,19 @@ function buildInsight(
   billing: BillingSlice,
   recurring: Recurring[],
 ): { icon: keyof typeof Ionicons.glyphMap; text: string; tone: Tone } | null {
-  const income = Number(summary.total_income) || 0;
-  const expense = Number(summary.total_expense) || 0;
-  const balance = Number(summary.balance) || 0;
+  // Saldo, ingresos y gastos del periodo en curso (lo mismo que muestra el hero).
+  const { income, expense, balance } = monthBalanceFigures(summary, summary.month_year === currentMonthYear());
+  // La comparativa con el mes anterior se hace entre meses naturales.
+  const naturalExpense = Number(summary.total_expense) || 0;
   const prevExpense = Number(summary.previous?.total_expense) || 0;
   const saved = Number(summary.saved_this_month) || 0;
   const recExpense = Number(summary.recurring_monthly?.expense) || 0;
   const periodStart = summary.current_period_start;
+  // Fin del periodo (exclusivo): el del servidor si lo da; si no, calculado igual que él.
+  const periodEnd = (start: string) =>
+    summary.next_period_start
+      ? new Date(`${summary.next_period_start}T00:00:00`)
+      : nextPeriodStartFrom(start, prefs.incomePayday);
 
   const hasIncomePlan =
     prefs.incomeAmount !== null &&
@@ -91,7 +99,7 @@ function buildInsight(
   //    el objetivo mensual de ahorro. Necesita ingreso + objetivo + saber
   //    cuándo termina el periodo en curso.
   if (hasIncomePlan && periodStart) {
-    const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
+    const endNext = periodEnd(periodStart);
     const today = new Date();
     const daysLeft = Math.max(1, daysBetween(today, endNext)); // hasta inicio del siguiente
     const goal = Number(prefs.savingsGoalMonthly) || 0;
@@ -136,7 +144,7 @@ function buildInsight(
     const start = new Date(`${periodStart}T00:00:00`);
     const today = new Date();
     const elapsed = Math.max(1, daysBetween(start, today) + 1);
-    const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
+    const endNext = periodEnd(periodStart);
     const totalDays = Math.max(elapsed, daysBetween(start, endNext));
     if (elapsed >= 3 && totalDays > elapsed) {
       const avgDaily = expense / elapsed;
@@ -172,7 +180,7 @@ function buildInsight(
 
   // 4) Días hasta el próximo cobro (countdown).
   if (periodStart && prefs.incomePayday) {
-    const endNext = nextPeriodStartFrom(periodStart, prefs.incomePayday);
+    const endNext = periodEnd(periodStart);
     const today = new Date();
     const daysToPay = daysBetween(today, endNext);
     if (daysToPay >= 0 && daysToPay <= 7) {
@@ -187,8 +195,8 @@ function buildInsight(
   }
 
   // 5) Comparativa con el mes anterior (existente).
-  if (prevExpense > 0 && expense > 0) {
-    const delta = ((expense - prevExpense) / prevExpense) * 100;
+  if (prevExpense > 0 && naturalExpense > 0) {
+    const delta = ((naturalExpense - prevExpense) / prevExpense) * 100;
     if (delta >= 8) {
       return { icon: 'trending-up', tone: 'warning', text: `Gastas un ${Math.round(delta)}% más que el mes pasado` };
     }
@@ -227,9 +235,16 @@ function buildInsight(
 
 export const InsightBanner: React.FC<Props> = ({ summary, daily, currency }) => {
   const { palette } = useTheme();
-  const incomeAmount = usePreferencesStore((s) => s.incomeAmount);
-  const incomePayday = usePreferencesStore((s) => s.incomePayday);
-  const savingsGoalMonthly = usePreferencesStore((s) => s.savingsGoalMonthly);
+  const user = useAuthStore((s) => s.user);
+  const localIncome = usePreferencesStore((s) => s.incomeAmount);
+  const localGoal = usePreferencesStore((s) => s.savingsGoalMonthly);
+  const serverProfile = !!user && 'income_payday' in user;
+  const incomeAmount = serverProfile ? user?.income_reference ?? null : localIncome;
+  const savingsGoalMonthly = serverProfile ? user?.savings_goal_monthly ?? null : localGoal;
+  // El periodo (current_period_start) lo calcula el servidor con SU día de cobro:
+  // hay que usar el mismo. El local puede ser un día de la semana (cobro semanal)
+  // o no estar sincronizado todavía.
+  const incomePayday = user?.income_payday ?? null;
   const recurring = useDataStore((s) => s.recurring);
   const billing = useBilling();
   const hasAdvanced = billing.hasFeature('advanced_analytics');

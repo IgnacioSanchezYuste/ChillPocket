@@ -14,11 +14,15 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\RequestHandlerInterface;
 use Slim\Factory\AppFactory;
 use Slim\Routing\RouteCollectorProxy;
+use Slim\Exception\HttpException;
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
 require __DIR__ . "/vendor/autoload.php";
 require __DIR__ . "/Conexion.php";
+require __DIR__ . "/Logger.php";
+AppLog::init(__DIR__ . '/logs');
+require __DIR__ . "/Mailer.php";
 
 // ================= CONFIG =================
 // El secreto JWT NUNCA va en el repo. Se busca, en este orden:
@@ -35,6 +39,7 @@ if ($__jwtSecret === '' && defined('JWT_SECRET_CONFIG')) {
     $__jwtSecret = (string) JWT_SECRET_CONFIG;
 }
 if ($__jwtSecret === '' || $__jwtSecret === 'cambia_este_secreto_en_produccion') {
+    AppLog::error('config', 'JWT_SECRET no configurado: la API no puede arrancar');
     http_response_code(500);
     header('Content-Type: application/json');
     echo json_encode(['error' => true, 'message' => 'Servidor mal configurado']);
@@ -86,8 +91,56 @@ $app->add(function (Request $request, RequestHandlerInterface $handler) {
         ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS);
 });
 
+// ================= QUERY STRING =================
+// Ningún endpoint usa listas en la query: `?from[]=x` se descarta aquí en vez de
+// acabar en un TypeError (500) dentro del handler.
+$app->add(function (Request $request, RequestHandlerInterface $handler) {
+    $query = $request->getQueryParams();
+    $strings = array_filter($query, 'is_string');
+    if (count($strings) !== count($query)) $request = $request->withQueryParams($strings);
+    return $handler->handle($request);
+});
+
+// ================= LOG DE PETICIONES =================
+$app->add(function (Request $request, RequestHandlerInterface $handler) {
+    $response = $handler->handle($request);
+    AppLog::request($request->getMethod(), $request->getUri()->getPath(), $response->getStatusCode(), clientIp($request));
+    return $response;
+});
+
+// ================= ERRORES =================
+// Última capa: cualquier excepción sin capturar (o una ruta inexistente) se
+// registra en el log y el cliente recibe un JSON neutro, nunca HTML ni detalles.
+$errorMiddleware = $app->addErrorMiddleware(false, false, false);
+$errorMiddleware->setDefaultErrorHandler(function (Request $request, Throwable $e) use ($app) {
+    $status = $e instanceof HttpException ? (int)$e->getCode() : 500;
+    if ($status < 400 || $status > 599) $status = 500;
+    $extra = [];
+    if ($status >= 500) {
+        $extra['error'] = get_class($e) . ': ' . $e->getMessage();
+        $extra['at'] = basename($e->getFile()) . ':' . $e->getLine();
+    }
+    AppLog::request($request->getMethod(), $request->getUri()->getPath(), $status, clientIp($request), $extra);
+    $message = match ($status) {
+        404 => 'Ruta no encontrada',
+        405 => 'Método no permitido',
+        default => $status >= 500 ? 'Error interno del servidor' : 'Petición no válida',
+    };
+    return jsonResponse($app->getResponseFactory()->createResponse($status), ['error' => true, 'message' => $message], $status)
+        ->withHeader('Access-Control-Allow-Origin', '*')
+        ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
+        ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS);
+});
+
 // ================= DB =================
 $conn = Conexion::getPDO();
+if (!$conn instanceof PDO) {
+    AppLog::error('db', 'Sin conexión a la base de datos (Conexion::getPDO devolvió null)');
+    http_response_code(503);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => true, 'message' => 'Servicio no disponible. Inténtalo en unos minutos.']);
+    exit;
+}
 $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 // ================= HELPERS =================
@@ -105,13 +158,127 @@ function authenticate(Request $request): ?array {
     } catch (Throwable $e) { return null; }
 }
 
+// Campos de `users` que se devuelven al cliente. Se lee con SELECT * y se filtra
+// aquí: así no se rompe nada si una migración aún no está aplicada, y nunca
+// salen password_hash ni google_sub.
+const USER_PUBLIC_FIELDS = [
+    'id', 'name', 'email', 'currency', 'timezone', 'avatar_url', 'theme', 'created_at',
+    'income_reference', 'income_payday', 'savings_goal_monthly',
+];
+
 function fetchUser(PDO $conn, int $userId): ?array {
-    $stmt = $conn->prepare("
-        SELECT id, name, email, currency, timezone, avatar_url, theme, created_at
-        FROM users WHERE id = :id LIMIT 1
-    ");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
     $stmt->execute([':id' => $userId]);
-    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) return null;
+
+    $user = [];
+    foreach (USER_PUBLIC_FIELDS as $field) {
+        if (array_key_exists($field, $row)) $user[$field] = $row[$field];
+    }
+    foreach (['income_reference', 'savings_goal_monthly'] as $field) {
+        if (isset($user[$field])) $user[$field] = (float)$user[$field];
+    }
+    if (isset($user['income_payday'])) $user['income_payday'] = (int)$user['income_payday'];
+    $user['email_verified'] = !empty($row['email_verified_at']);
+    // Solo con el email verificado: si no, alguien podría registrar primero el
+    // email de administrador (si aún no tiene cuenta) y obtener el panel.
+    $user['is_admin'] = $user['email_verified'] && isAdminEmail((string)($row['email'] ?? ''));
+    return $user;
+}
+
+/** ADMIN_EMAILS (Conexion.php o entorno): emails separados por comas. */
+function isAdminEmail(string $email): bool {
+    if ($email === '') return false;
+    $admins = array_filter(array_map(
+        fn(string $e): string => strtolower(trim($e)),
+        explode(',', appConfig('ADMIN_EMAILS'))
+    ));
+    return in_array(strtolower($email), $admins, true);
+}
+
+/** Usuario de la petición si es administrador; null si no. */
+function adminUser(PDO $conn, Request $request): ?array {
+    $jwt  = $request->getAttribute('user');
+    $user = fetchUser($conn, (int)($jwt['user_id'] ?? 0));
+    return ($user && !empty($user['is_admin'])) ? $user : null;
+}
+
+/** ¿Tiene el usuario importes guardados? (cambiar solo el símbolo los falsearía). */
+function userHasMoneyData(PDO $conn, int $userId): bool {
+    $st = $conn->prepare("
+        SELECT EXISTS(SELECT 1 FROM transactions       WHERE user_id = :a)
+            OR EXISTS(SELECT 1 FROM recurring_expenses WHERE user_id = :b)
+            OR EXISTS(SELECT 1 FROM savings_goals      WHERE user_id = :c)
+            OR EXISTS(SELECT 1 FROM budgets            WHERE user_id = :d)
+    ");
+    $st->execute([':a' => $userId, ':b' => $userId, ':c' => $userId, ':d' => $userId]);
+    return (bool)$st->fetchColumn();
+}
+
+// POST /usage: filas (evento × plataforma) nuevas admitidas por día. Acota el
+// tamaño de usage_daily aunque un cliente mande nombres inventados.
+const USAGE_MAX_ROWS_PER_DAY = 1000;
+
+// =====================================================
+// DIVISAS · tipos de cambio (BCE vía frankfurter.dev, cacheados 12 h)
+// =====================================================
+const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'GBP', 'MXN'];
+const EXCHANGE_RATE_TTL_HOURS = 12;
+const EXCHANGE_RATE_SOURCE = 'Banco Central Europeo (frankfurter.dev)';
+
+/**
+ * 1 $from = rate $to. Usa la caché de exchange_rates (compartida entre usuarios:
+ * como mucho una llamada externa por par cada 12 h). Si la API externa falla, se
+ * usa el último valor guardado aunque esté caducado. null si no hay ninguno.
+ */
+function exchangeRate(PDO $conn, string $from, string $to): ?array {
+    if ($from === $to) return ['rate' => 1.0, 'date' => date('Y-m-d')];
+    // Solo pares de la lista blanca: la URL externa nunca lleva otra cosa, y una
+    // cuenta con una moneda fuera de la lista no provoca una llamada por petición.
+    if (!in_array($from, SUPPORTED_CURRENCIES, true) || !in_array($to, SUPPORTED_CURRENCIES, true)) return null;
+
+    $sel = $conn->prepare("
+        SELECT rate, rate_date, fetched_at >= DATE_SUB(NOW(), INTERVAL " . (int)EXCHANGE_RATE_TTL_HOURS . " HOUR) AS fresh
+        FROM exchange_rates WHERE base = :b AND quote = :q LIMIT 1
+    ");
+    $sel->execute([':b' => $from, ':q' => $to]);
+    $cached = $sel->fetch(PDO::FETCH_ASSOC) ?: null;
+    if ($cached && (int)$cached['fresh'] === 1) {
+        return ['rate' => (float)$cached['rate'], 'date' => (string)$cached['rate_date']];
+    }
+
+    // $from y $to están en SUPPORTED_CURRENCIES (comprobado arriba): URL segura.
+    $raw  = httpGetRaw('https://api.frankfurter.dev/v1/latest?base=' . rawurlencode($from) . '&symbols=' . rawurlencode($to));
+    $json = $raw !== null ? json_decode($raw, true) : null;
+    $rate = is_array($json) ? ($json['rates'][$to] ?? null) : null;
+    $date = is_array($json) ? (string)($json['date'] ?? '') : '';
+    // Sin confianza ciega en la respuesta: número finito, en un rango plausible
+    // (y que quepa en DECIMAL(18,8) sin redondear a 0) y fecha con formato.
+    $plausible = is_numeric($rate) && is_finite((float)$rate)
+        && (float)$rate >= 0.0001 && (float)$rate <= 100000;
+    if ($plausible && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        $conn->prepare("
+            INSERT INTO exchange_rates (base, quote, rate, rate_date, fetched_at)
+            VALUES (:b, :q, :r, :d, NOW())
+            ON DUPLICATE KEY UPDATE rate = VALUES(rate), rate_date = VALUES(rate_date), fetched_at = NOW()
+        ")->execute([':b' => $from, ':q' => $to, ':r' => (string)$rate, ':d' => $date]);
+        return ['rate' => (float)$rate, 'date' => $date];
+    }
+
+    AppLog::warning('currency', "no se pudo obtener el cambio {$from}→{$to}", ['cache' => $cached ? 'caducada' : 'vacía']);
+    if ($cached) {
+        // Con la API caída no se reintenta en cada petición (cada intento puede
+        // tardar hasta el timeout): el siguiente, dentro de 15 minutos.
+        try {
+            $conn->prepare("
+                UPDATE exchange_rates
+                SET fetched_at = DATE_SUB(NOW(), INTERVAL " . ((int)EXCHANGE_RATE_TTL_HOURS * 60 - 15) . " MINUTE)
+                WHERE base = :b AND quote = :q
+            ")->execute([':b' => $from, ':q' => $to]);
+        } catch (Throwable $e) { /* solo es una espera */ }
+    }
+    return $cached ? ['rate' => (float)$cached['rate'], 'date' => (string)$cached['rate_date']] : null;
 }
 
 function tokenForUser(array $user): string {
@@ -245,32 +412,67 @@ function clientIp(Request $req): string {
     return (string)($s['REMOTE_ADDR'] ?? '0.0.0.0');
 }
 
+// bucket_key es VARCHAR(128): un email largo no cabría (el INSERT fallaría en
+// silencio y ese email quedaría sin límite). Por encima de 120 bytes se usa su hash.
+function authEmailBucket(string $email): string {
+    $email = strtolower($email);
+    return 'email:' . (strlen($email) > 120 ? 'h:' . hash('sha256', $email) : $email);
+}
+
+function authIpBucket(Request $req): string {
+    return 'ip:' . substr(clientIp($req), 0, 64);
+}
+
 /**
  * Devuelve true si el cliente puede intentar (dentro de los límites), false si está bloqueado.
  * Cuenta intentos en la ventana, sumando por ip y por email por separado.
+ * La ventana se calcula con NOW() de la BD (igual que attempted_at): si PHP y
+ * MySQL tienen zonas horarias distintas, la ventana no se descuadra.
  */
 function checkAuthRateLimit(PDO $conn, Request $req, string $endpoint, ?string $email = null, int $maxAttempts = 5, int $windowMin = 15): bool {
-    $ip    = clientIp($req);
-    $since = (new DateTimeImmutable())->modify("-{$windowMin} minutes")->format('Y-m-d H:i:s');
-    $buckets = ['ip:' . $ip];
-    if ($email !== null && $email !== '') $buckets[] = 'email:' . strtolower($email);
+    $windowMin = max(1, $windowMin); // entero controlado por el código
+    $buckets = [authIpBucket($req)];
+    if ($email !== null && $email !== '') $buckets[] = authEmailBucket($email);
     $stmt = $conn->prepare("
         SELECT COUNT(*) FROM auth_attempts
-        WHERE bucket_key = :b AND endpoint = :e AND attempted_at >= :since
+        WHERE bucket_key = :b AND endpoint = :e
+          AND attempted_at >= DATE_SUB(NOW(), INTERVAL $windowMin MINUTE)
     ");
     foreach ($buckets as $b) {
-        $stmt->execute([':b' => $b, ':e' => $endpoint, ':since' => $since]);
-        if ((int)$stmt->fetchColumn() >= $maxAttempts) return false;
+        $stmt->execute([':b' => $b, ':e' => $endpoint]);
+        if ((int)$stmt->fetchColumn() >= $maxAttempts) {
+            AppLog::warning('auth', "límite alcanzado: $endpoint", [
+                'por' => str_starts_with($b, 'ip:') ? 'ip' : 'email',
+                'email' => $email ? AppLog::maskEmail($email) : '-',
+            ]);
+            return false;
+        }
     }
     return true;
 }
 
+/**
+ * Tope de 24 h solo por email (la IP la comparten NAT/CGNAT y X-Forwarded-For
+ * se puede falsificar). Frena la fuerza bruta lenta de códigos de 6 dígitos y
+ * el bombardeo de correos a una misma dirección.
+ */
+function checkEmailDailyLimit(PDO $conn, string $endpoint, string $email, int $maxPerDay): bool {
+    if ($email === '') return true;
+    $stmt = $conn->prepare("
+        SELECT COUNT(*) FROM auth_attempts
+        WHERE bucket_key = :b AND endpoint = :e
+          AND attempted_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+    ");
+    $stmt->execute([':b' => authEmailBucket($email), ':e' => $endpoint]);
+    return (int)$stmt->fetchColumn() < $maxPerDay;
+}
+
 function recordAuthFailure(PDO $conn, Request $req, string $endpoint, ?string $email = null): void {
-    $ip = clientIp($req);
+    AppLog::info('auth', "intento registrado: $endpoint", ['email' => $email ? AppLog::maskEmail($email) : '-']);
     $ins = $conn->prepare("INSERT INTO auth_attempts (bucket_key, endpoint) VALUES (:b, :e)");
-    try { $ins->execute([':b' => 'ip:' . $ip, ':e' => $endpoint]); } catch (Throwable $err) {}
+    try { $ins->execute([':b' => authIpBucket($req), ':e' => $endpoint]); } catch (Throwable $err) {}
     if ($email !== null && $email !== '') {
-        try { $ins->execute([':b' => 'email:' . strtolower($email), ':e' => $endpoint]); } catch (Throwable $err) {}
+        try { $ins->execute([':b' => authEmailBucket($email), ':e' => $endpoint]); } catch (Throwable $err) {}
     }
     // Limpieza oportunista (1/100): borra registros > 7 días para no engordar la tabla.
     if (random_int(1, 100) === 1) {
@@ -279,11 +481,10 @@ function recordAuthFailure(PDO $conn, Request $req, string $endpoint, ?string $e
 }
 
 function clearAuthAttempts(PDO $conn, Request $req, string $endpoint, ?string $email = null): void {
-    $ip = clientIp($req);
     $del = $conn->prepare("DELETE FROM auth_attempts WHERE bucket_key = :b AND endpoint = :e");
-    try { $del->execute([':b' => 'ip:' . $ip, ':e' => $endpoint]); } catch (Throwable $err) {}
+    try { $del->execute([':b' => authIpBucket($req), ':e' => $endpoint]); } catch (Throwable $err) {}
     if ($email !== null && $email !== '') {
-        try { $del->execute([':b' => 'email:' . strtolower($email), ':e' => $endpoint]); } catch (Throwable $err) {}
+        try { $del->execute([':b' => authEmailBucket($email), ':e' => $endpoint]); } catch (Throwable $err) {}
     }
 }
 
@@ -303,36 +504,79 @@ function rateLimitedResponse(Response $response, int $windowMin = 15): Response 
 // Devuelve el plan activo del usuario (o 'free') con sus límites y features.
 // Si no hay fila activa en user_entitlements → 'free'. Si hay varias activas,
 // se queda con la de mayor "rango" (pro_freelance > family > plus > free).
+// `plan_id` manda (es la columna que se edita a mano); `plan_code` es el respaldo
+// de filas antiguas y se corrige sola si no coincide.
 function getUserEntitlements(PDO $conn, int $userId): array {
-    $stmt = $conn->prepare("
-        SELECT e.plan_code, e.source, e.expires_at
-        FROM user_entitlements e
-        WHERE e.user_id = :u
-          AND e.is_active = 1
-          AND (e.expires_at IS NULL OR e.expires_at >= CURDATE())
-        ORDER BY
-          CASE e.plan_code
-            WHEN 'pro_freelance' THEN 4
-            WHEN 'family'        THEN 3
-            WHEN 'plus'          THEN 2
-            ELSE 1
-          END DESC
-        LIMIT 1
-    ");
-    $stmt->execute([':u' => $userId]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $planCode = $row['plan_code'] ?? 'free';
+    $row = null;
+    try {
+        $stmt = $conn->prepare("
+            SELECT e.id AS ent_id, e.plan_code AS stored_code, e.source, e.expires_at,
+                   p.code AS plan_code, p.name, p.limits_json, p.features_json
+            FROM user_entitlements e
+            JOIN plans p ON p.id = COALESCE(
+                e.plan_id,
+                (SELECT p2.id FROM plans p2 WHERE p2.code = e.plan_code LIMIT 1)
+            )
+            WHERE e.user_id = :u
+              AND e.is_active = 1
+              AND (e.expires_at IS NULL OR e.expires_at >= CURDATE())
+            ORDER BY
+              CASE p.code
+                WHEN 'pro_freelance' THEN 4
+                WHEN 'family'        THEN 3
+                WHEN 'plus'          THEN 2
+                ELSE 1
+              END DESC,
+              (e.expires_at IS NULL) DESC, -- a igual plan, la fila permanente (early adopter, lifetime, manual)
+              e.id DESC
+            LIMIT 1
+        ");
+        $stmt->execute([':u' => $userId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
-    $p = $conn->prepare("SELECT name, limits_json, features_json FROM plans WHERE code = :c LIMIT 1");
-    $p->execute([':c' => $planCode]);
-    $plan = $p->fetch(PDO::FETCH_ASSOC);
+        if ($row && $row['stored_code'] !== $row['plan_code']) {
+            try {
+                $conn->prepare("UPDATE user_entitlements SET plan_code = :c WHERE id = :id")
+                     ->execute([':c' => $row['plan_code'], ':id' => $row['ent_id']]);
+            } catch (Throwable $e) {
+                error_log('[entitlements] no se pudo sincronizar plan_code: ' . $e->getMessage());
+            }
+        }
+    } catch (PDOException $e) {
+        // Migración §11 (plan_id) aún sin aplicar: consulta por plan_code.
+        $stmt = $conn->prepare("
+            SELECT e.source, e.expires_at, p.code AS plan_code, p.name, p.limits_json, p.features_json
+            FROM user_entitlements e
+            JOIN plans p ON p.code = e.plan_code
+            WHERE e.user_id = :u
+              AND e.is_active = 1
+              AND (e.expires_at IS NULL OR e.expires_at >= CURDATE())
+            ORDER BY
+              CASE p.code
+                WHEN 'pro_freelance' THEN 4
+                WHEN 'family'        THEN 3
+                WHEN 'plus'          THEN 2
+                ELSE 1
+              END DESC
+            LIMIT 1
+        ");
+        $stmt->execute([':u' => $userId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
 
-    $limits   = $plan ? (json_decode((string)$plan['limits_json'],   true) ?: []) : [];
-    $features = $plan ? (json_decode((string)$plan['features_json'], true) ?: []) : [];
+    if (!$row) {
+        $p = $conn->prepare("SELECT code AS plan_code, name, limits_json, features_json FROM plans WHERE code = 'free' LIMIT 1");
+        $p->execute();
+        $row = ($p->fetch(PDO::FETCH_ASSOC) ?: []) + ['plan_code' => 'free', 'source' => null, 'expires_at' => null];
+    }
+
+    $planCode = (string)$row['plan_code'];
+    $limits   = json_decode((string)($row['limits_json'] ?? ''), true) ?: [];
+    $features = json_decode((string)($row['features_json'] ?? ''), true) ?: [];
 
     return [
         'plan_code'      => $planCode,
-        'plan_name'      => $plan['name'] ?? 'Gratis',
+        'plan_name'      => $row['name'] ?? 'Gratis',
         'plan_source'    => $row['source'] ?? null,
         'plan_expires_at'=> $row['expires_at'] ?? null,
         'limits'         => $limits,
@@ -340,6 +584,164 @@ function getUserEntitlements(PDO $conn, int $userId): array {
         'is_premium'     => $planCode !== 'free',
         'is_web_allowed' => (bool)($features['web_access'] ?? false),
     ];
+}
+
+// Crea la fila base del plan (gratis, source='manual') de un usuario nuevo.
+// Es la fila que se edita a mano para cambiarle el plan. Si la migración §11
+// aún no está aplicada, se registra el error y el usuario queda en gratis igual.
+function createBaseEntitlement(PDO $conn, int $userId): void {
+    try {
+        $conn->prepare("
+            INSERT INTO user_entitlements (user_id, plan_code, plan_id, is_active, source)
+            SELECT :u, p.code, p.id, 1, 'manual' FROM plans p WHERE p.code = 'free' LIMIT 1
+        ")->execute([':u' => $userId]);
+    } catch (Throwable $e) {
+        error_log('[entitlements] fila base no creada: ' . $e->getMessage());
+    }
+}
+
+// =====================================================
+// EMAIL · códigos de verificación y recuperación (§12)
+// =====================================================
+const EMAIL_CODE_MAX_ATTEMPTS = 5;
+const EMAIL_CODE_TTL_VERIFY   = 60; // minutos
+const EMAIL_CODE_TTL_RESET    = 15; // minutos
+// Topes de 24 h por email (además de los de 15 min): envíos y códigos fallidos.
+const EMAIL_SENDS_PER_DAY     = 10;
+const EMAIL_CODE_FAILS_PER_DAY = 15;
+
+// Solo se guarda el HMAC del código: un volcado de la BD no permite usarlos.
+function emailCodeHash(string $code): string {
+    return hash_hmac('sha256', $code, JWT_SECRET);
+}
+
+// Genera un código de 6 dígitos e invalida los anteriores del mismo propósito.
+function issueEmailCode(PDO $conn, int $userId, string $purpose, int $ttlMinutes): string {
+    $conn->prepare("UPDATE email_codes SET used_at = NOW() WHERE user_id = :u AND purpose = :p AND used_at IS NULL")
+         ->execute([':u' => $userId, ':p' => $purpose]);
+
+    $code = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+    $ttl  = max(1, $ttlMinutes); // entero controlado por el código, no por el cliente
+    $conn->prepare("
+        INSERT INTO email_codes (user_id, purpose, code_hash, expires_at)
+        VALUES (:u, :p, :h, DATE_ADD(NOW(), INTERVAL $ttl MINUTE))
+    ")->execute([':u' => $userId, ':p' => $purpose, ':h' => emailCodeHash($code)]);
+
+    // Limpieza oportunista (sin cron en Hostinger).
+    if (random_int(1, 20) === 1) {
+        try { $conn->exec("DELETE FROM email_codes WHERE created_at < DATE_SUB(NOW(), INTERVAL 7 DAY)"); } catch (Throwable $e) {}
+    }
+    return $code;
+}
+
+// Valida y consume un código. Cada intento (también el bueno) gasta uno de los
+// 5 disponibles; agotados, el código muere.
+function consumeEmailCode(PDO $conn, int $userId, string $purpose, string $code): bool {
+    if (!preg_match('/^\d{6}$/', $code)) return false;
+
+    $stmt = $conn->prepare("
+        SELECT id, code_hash FROM email_codes
+        WHERE user_id = :u AND purpose = :p AND used_at IS NULL AND expires_at >= NOW()
+        ORDER BY id DESC LIMIT 1
+    ");
+    $stmt->execute([':u' => $userId, ':p' => $purpose]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) return false;
+
+    // Reserva atómica del intento ANTES de comparar: con peticiones en paralelo,
+    // leer `attempts` y sumar después permitía probar muchos más de 5 códigos.
+    $max = (int)EMAIL_CODE_MAX_ATTEMPTS;
+    $try = $conn->prepare("
+        UPDATE email_codes SET attempts = attempts + 1
+        WHERE id = :id AND used_at IS NULL AND attempts < $max
+    ");
+    $try->execute([':id' => $row['id']]);
+    if ($try->rowCount() !== 1) return false;
+
+    if (!hash_equals((string)$row['code_hash'], emailCodeHash($code))) return false;
+
+    // Consumo atómico: dos peticiones simultáneas no pueden usar el mismo código.
+    $upd = $conn->prepare("UPDATE email_codes SET used_at = NOW() WHERE id = :id AND used_at IS NULL");
+    $upd->execute([':id' => $row['id']]);
+    if ($upd->rowCount() !== 1) return false;
+
+    // Dos emisiones simultáneas pueden dejar otro código vivo: se anula también.
+    $conn->prepare("UPDATE email_codes SET used_at = NOW() WHERE user_id = :u AND purpose = :p AND used_at IS NULL")
+         ->execute([':u' => $userId, ':p' => $purpose]);
+    return true;
+}
+
+function markEmailVerified(PDO $conn, int $userId): void {
+    try {
+        $conn->prepare("UPDATE users SET email_verified_at = NOW() WHERE id = :id AND email_verified_at IS NULL")
+             ->execute([':id' => $userId]);
+    } catch (Throwable $e) {
+        error_log('[email] no se pudo marcar como verificado: ' . $e->getMessage());
+    }
+}
+
+// Envía el correo DESPUÉS de responder al cliente: la respuesta tarda lo mismo
+// exista o no la cuenta (no permite averiguar emails por tiempo) y la app no
+// espera al SMTP. Si falla, queda en el log.
+function sendMailAfterResponse(string $to, string $subject, array $body): void {
+    register_shutdown_function(function () use ($to, $subject, $body) {
+        // Que cerrar la conexión con la app no aborte el envío.
+        ignore_user_abort(true);
+        if (function_exists('fastcgi_finish_request')) {
+            fastcgi_finish_request();
+        } elseif (function_exists('litespeed_finish_request')) {
+            litespeed_finish_request();
+        }
+        $mailer = Mailer::fromConfig();
+        if ($mailer === null) {
+            AppLog::error('mail', 'SMTP sin configurar (faltan SMTP_HOST/SMTP_USER/SMTP_PASS): no se envía', ['asunto' => $subject]);
+            return;
+        }
+        try {
+            $mailer->send($to, $subject, $body['text'], $body['html']);
+            AppLog::info('mail', 'enviado', ['asunto' => $subject, 'para' => AppLog::maskEmail($to)]);
+        } catch (Throwable $e) {
+            AppLog::error('mail', 'fallo al enviar: ' . $e->getMessage(), ['asunto' => $subject, 'para' => AppLog::maskEmail($to)]);
+        }
+    });
+}
+
+// El nombre lo elige quien se registra y el correo sale con nuestro remitente
+// hacia un email que puede no ser suyo: solo se usa la primera palabra, corta,
+// y se descarta si parece un enlace, un dominio o un teléfono (anti-phishing).
+function emailGreetingName(string $name): string {
+    $clean = preg_replace('/[\p{C}\s]+/u', ' ', $name); // null si el UTF-8 es inválido
+    $first = explode(' ', trim((string)$clean))[0];
+    if ($first === '' || preg_match('~[0-9/@:\\\\<>]|www\.|\.[a-z]{2,}~i', $first)) return '';
+    return function_exists('mb_substr') ? mb_substr($first, 0, 30, 'UTF-8') : substr($first, 0, 30);
+}
+
+// Plantilla común de los correos. Devuelve ['text' => ..., 'html' => ...].
+function emailBody(string $name, string $intro, ?string $code, string $outro): array {
+    $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
+    $name = emailGreetingName($name);
+    $greeting = $name !== '' ? "Hola, $name:" : 'Hola:';
+
+    $text = $greeting . "\n\n" . $intro . "\n\n"
+          . ($code !== null ? $code . "\n\n" : '')
+          . $outro . "\n\n— ChillPocket";
+
+    $codeHtml = $code === null ? '' :
+        '<p style="margin:24px 0;text-align:center"><span style="display:inline-block;padding:14px 22px;'
+        . 'border-radius:14px;background:#EEEDFD;color:#6C63F1;font-size:32px;font-weight:700;letter-spacing:8px;'
+        . 'font-family:Menlo,Consolas,monospace">' . $e($code) . '</span></p>';
+
+    $html = '<!doctype html><html lang="es"><body style="margin:0;padding:24px;background:#F4F3FA;'
+          . 'font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1F1D2B">'
+          . '<div style="max-width:480px;margin:0 auto;background:#FFFFFF;border-radius:20px;padding:28px">'
+          . '<p style="margin:0 0 20px;font-size:20px;font-weight:700;color:#6C63F1">ChillPocket</p>'
+          . '<p style="margin:0 0 12px;font-size:16px">' . $e($greeting) . '</p>'
+          . '<p style="margin:0;font-size:15px;line-height:1.5">' . $e($intro) . '</p>'
+          . $codeHtml
+          . '<p style="margin:0;font-size:13px;line-height:1.5;color:#6B6880">' . $e($outro) . '</p>'
+          . '</div></body></html>';
+
+    return ['text' => $text, 'html' => $html];
 }
 
 // Une los datos de billing al objeto user que se devuelve al cliente.
@@ -477,14 +879,22 @@ function httpGetRaw(string $url): ?string {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT        => 10,
             CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_FOLLOWLOCATION => false,
         ]);
         $res = curl_exec($ch);
-        curl_close($ch);
+        // Sin curl_close(): no hace nada desde PHP 8.0 y en 8.5 avisa de obsoleto en el log.
         return $res === false ? null : $res;
     }
-    $res = @file_get_contents($url);
+    // Mismo timeout y TLS verificado también sin cURL (por defecto serían 60 s).
+    $ctx = stream_context_create([
+        'http' => ['timeout' => 10, 'follow_location' => 0],
+        'ssl'  => ['verify_peer' => true, 'verify_peer_name' => true],
+    ]);
+    $res = @file_get_contents($url, false, $ctx);
     return $res === false ? null : $res;
 }
 
@@ -761,15 +1171,52 @@ function closeFinancialPeriods(PDO $conn, int $userId): void {
     $currentStart = currentPeriodStart($conn, $userId);
 
     // Último cierre ya registrado para este usuario.
-    $stmt = $conn->prepare("SELECT MAX(period_start) AS last_start FROM monthly_closures WHERE user_id = :u");
-    $stmt->execute([':u' => $userId]);
-    $lastRow   = $stmt->fetch(PDO::FETCH_ASSOC);
-    $lastStart = $lastRow['last_start'] ?? null;
+    $lastStmt = $conn->prepare("SELECT MAX(period_start) AS last_start FROM monthly_closures WHERE user_id = :u");
+    $lastStmt->execute([':u' => $userId]);
+    $lastStart = $lastStmt->fetch(PDO::FETCH_ASSOC)['last_start'] ?? null;
 
-    // Determinar desde qué periodo hay que empezar.
+    if (pendingPeriodStart($payday, $oldest, $lastStart) >= $currentStart) {
+        return; // Caso habitual: no hay nada pendiente (sin bloqueos ni consultas extra).
+    }
+
+    // Hay cierres pendientes. Se hacen con la fila del usuario bloqueada y
+    // confirmando que el día de cobro sigue siendo el leído: si PUT /me lo está
+    // cambiando a la vez, cerrar con el anterior dejaría cierres solapados.
+    $ownTx = !$conn->inTransaction();
+    if ($ownTx) $conn->beginTransaction();
+    try {
+        $lock = $conn->prepare("SELECT income_payday FROM users WHERE id = :u FOR UPDATE");
+        $lock->execute([':u' => $userId]);
+        $locked = $lock->fetch(PDO::FETCH_ASSOC);
+        $freshPayday = ($locked && $locked['income_payday'] !== null) ? (int)$locked['income_payday'] : null;
+        if ($freshPayday !== $payday) {
+            if ($ownTx) $conn->rollBack();
+            return; // la siguiente petición cerrará con el valor nuevo
+        }
+        // Ya con el bloqueo, el último cierre puede haber cambiado.
+        $lastStmt->execute([':u' => $userId]);
+        $lastStart = $lastStmt->fetch(PDO::FETCH_ASSOC)['last_start'] ?? null;
+        closePendingPeriods($conn, $userId, $payday, $oldest, $currentStart, $lastStart);
+        if ($ownTx) $conn->commit();
+    } catch (Throwable $e) {
+        if ($ownTx && $conn->inTransaction()) $conn->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * Inserta los cierres pendientes (máx. 24) desde el siguiente al último cerrado,
+ * o desde el periodo de la transacción más antigua si no hay ninguno.
+ * La llama closeFinancialPeriods() con la fila del usuario bloqueada.
+ */
+/**
+ * Primer periodo sin cerrar: el siguiente al último cierre o, si no hay
+ * ninguno, el periodo que contiene la transacción más antigua.
+ */
+function pendingPeriodStart(?int $payday, string $oldest, ?string $lastStart): string {
     if ($lastStart !== null) {
         // El siguiente periodo a cerrar es el consecutivo al último cerrado.
-        $nextStart = nextPeriodStart($lastStart, $payday);
+        return nextPeriodStart($lastStart, $payday);
     } else {
         // Nunca se han hecho cierres: empezamos desde el periodo de la tx más antigua.
         // Calcular el periodo_start que corresponde a $oldest según el payday.
@@ -779,23 +1226,27 @@ function closeFinancialPeriods(PDO $conn, int $userId): void {
         $oDay      = (int)$oldestDt->format('j');
 
         if ($payday === null || $payday < 1 || $payday > 31) {
-            $nextStart = sprintf('%04d-%02d-01', $oYear, $oMonth);
+            return sprintf('%04d-%02d-01', $oYear, $oMonth);
         } else {
             $lastDayO   = (int)(new DateTimeImmutable("$oYear-$oMonth-01"))->format('t');
             $paydayO    = min($payday, $lastDayO);
             if ($oDay >= $paydayO) {
                 // La tx cayó dentro del periodo que empieza en paydayO de ese mes.
-                $nextStart = sprintf('%04d-%02d-%02d', $oYear, $oMonth, $paydayO);
+                return sprintf('%04d-%02d-%02d', $oYear, $oMonth, $paydayO);
             } else {
                 // La tx cayó antes del payday de ese mes → periodo del mes anterior.
                 $pm = $oMonth - 1; $py = $oYear;
                 if ($pm < 1) { $pm = 12; $py--; }
                 $lastDayPM  = (int)(new DateTimeImmutable("$py-$pm-01"))->format('t');
                 $paydayPM   = min($payday, $lastDayPM);
-                $nextStart  = sprintf('%04d-%02d-%02d', $py, $pm, $paydayPM);
+                return sprintf('%04d-%02d-%02d', $py, $pm, $paydayPM);
             }
         }
     }
+}
+
+function closePendingPeriods(PDO $conn, int $userId, ?int $payday, string $oldest, string $currentStart, ?string $lastStart): void {
+    $nextStart = pendingPeriodStart($payday, $oldest, $lastStart);
 
     // Preparar statements reutilizables.
     $surplusStmt = $conn->prepare("
@@ -911,6 +1362,11 @@ function requireAuth(PDO $conn): callable {
             $response = new \Slim\Psr7\Response();
             return jsonResponse($response, ['error'=>true,'message'=>'Token inválido o no proporcionado'], 401);
         }
+        AppLog::setUser((int)$user['user_id']);
+        // El lote de estadísticas no toca datos financieros: se ahorra las tareas diferidas.
+        if (str_ends_with($request->getUri()->getPath(), '/usage')) {
+            return $handler->handle($request->withAttribute('user', $user));
+        }
         // Expansión lazy: para cualquier petición autenticada generamos las
         // transacciones recurrentes que toquen. Es idempotente gracias al
         // INDEX UNIQUE (user_id, recurring_id, transaction_date).
@@ -991,7 +1447,9 @@ $app->post('/auth/register', function (Request $request, Response $response) use
             return jsonResponse($response, ['error'=>true,'message'=>"Falta campo: $f"], 400);
         }
     }
-    if (!filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
+    // isSafeAddress además rechaza lo que FILTER_VALIDATE_EMAIL deja pasar y
+    // rompería el SMTP (comillas con saltos de línea escapados, [IP], etc.).
+    if (!is_string($data['email']) || !Mailer::isSafeAddress($data['email'])) {
         recordAuthFailure($conn, $request, 'register', $emailIn);
         return jsonResponse($response, ['error'=>true,'message'=>'Email inválido'], 400);
     }
@@ -1028,6 +1486,7 @@ $app->post('/auth/register', function (Request $request, Response $response) use
             ':tz' => $timezone
         ]);
         $userId = (int)$conn->lastInsertId();
+        createBaseEntitlement($conn, $userId);
 
         $conn->commit();
 
@@ -1036,6 +1495,20 @@ $app->post('/auth/register', function (Request $request, Response $response) use
 
         // Éxito → limpia los intentos previos para no penalizar al usuario.
         clearAuthAttempts($conn, $request, 'register', $emailIn);
+        AppLog::info('auth', 'registro', ['u' => $userId]);
+
+        // Verificación de email no bloqueante: la cuenta ya funciona.
+        try {
+            $code = issueEmailCode($conn, $userId, 'verify_email', EMAIL_CODE_TTL_VERIFY);
+            sendMailAfterResponse((string)$user['email'], 'Confirma tu email en ChillPocket', emailBody(
+                (string)$user['name'],
+                'Bienvenido a ChillPocket. Introduce este código en la app para confirmar tu email:',
+                $code,
+                'Caduca en ' . EMAIL_CODE_TTL_VERIFY . ' minutos. Si no has creado esta cuenta, ignora este correo.'
+            ));
+        } catch (Throwable $e) {
+            error_log('[auth/register] código de verificación: ' . $e->getMessage());
+        }
 
         return jsonResponse($response, [
             'success' => true,
@@ -1104,13 +1577,31 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
 
         // 2) Si no, busca por email para enlazar cuenta existente.
         if (!$userId) {
-            $stmt = $conn->prepare("SELECT id FROM users WHERE email = :e LIMIT 1");
+            $stmt = $conn->prepare("SELECT id, google_sub, email_verified_at FROM users WHERE email = :e LIMIT 1");
             $stmt->execute([':e'=>$email]);
-            $userId = $stmt->fetchColumn();
-            if ($userId) {
+            $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($existing) {
+                // Si la cuenta ya está vinculada a OTRA cuenta de Google (sub distinto),
+                // no se reenlaza: el `sub` es la identidad estable y un email puede
+                // cambiar de dueño en Google (dominios caducados, cuentas recreadas).
+                if (!empty($existing['google_sub']) && (string)$existing['google_sub'] !== $sub) {
+                    $conn->rollBack();
+                    recordAuthFailure($conn, $request, 'google', $email);
+                    error_log('[auth/google] email ya vinculado a otro google_sub (user ' . (int)$existing['id'] . ')');
+                    return jsonResponse($response, ['error'=>true,'message'=>'Este email ya está vinculado a otra cuenta de Google'], 409);
+                }
+                $userId = (int)$existing['id'];
                 // Enlazamos el google_sub a la cuenta ya existente
-                $upd = $conn->prepare("UPDATE users SET google_sub = :s WHERE id = :id");
+                $upd = $conn->prepare("UPDATE users SET google_sub = :s WHERE id = :id AND google_sub IS NULL");
                 $upd->execute([':s'=>$sub, ':id'=>$userId]);
+                // Sin email verificado, la contraseña pudo ponerla otra persona que
+                // registró este email antes que su dueño: deja de valer. El dueño
+                // entra con Google o fija una nueva con "¿Olvidaste tu contraseña?".
+                if (empty($existing['email_verified_at'])) {
+                    $conn->prepare("UPDATE users SET password_hash = :h WHERE id = :id")
+                         ->execute([':h' => password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT), ':id' => $userId]);
+                    AppLog::warning('auth', 'google enlazado a cuenta sin verificar: contraseña invalidada', ['user' => $userId]);
+                }
             }
         }
 
@@ -1129,6 +1620,7 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
             ]);
             $userId = (int)$conn->lastInsertId();
             $isNew = true; // usuario recién creado vía Google → activar onboarding
+            createBaseEntitlement($conn, $userId);
         }
 
         $conn->commit();
@@ -1137,6 +1629,9 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
         recordAuthFailure($conn, $request, 'google', $email);
         return jsonResponse($response, ['error'=>true,'message'=>'No se pudo iniciar sesión con Google'], 500);
     }
+
+    // Google ya ha verificado el email (se comprueba arriba).
+    markEmailVerified($conn, (int)$userId);
 
     $user = fetchUser($conn, (int)$userId);
     if (!$user) {
@@ -1151,6 +1646,7 @@ $app->post('/auth/google', function (Request $request, Response $response) use (
 
     // Éxito → limpia contadores para esa IP y email.
     clearAuthAttempts($conn, $request, 'google', $email);
+    AppLog::info('auth', $isNew ? 'registro con Google' : 'login con Google', ['u' => (int)$user['id']]);
 
     return jsonResponse($response, [
         'success' => true,
@@ -1189,12 +1685,114 @@ $app->post('/auth/login', function (Request $request, Response $response) use ($
 
     // Éxito → reset del contador para esa IP+email.
     clearAuthAttempts($conn, $request, 'login', $emailIn);
+    AppLog::info('auth', 'login correcto', ['u' => (int)$user['id']]);
 
     return jsonResponse($response, [
         'success' => true,
         'token'   => tokenForUser($user),
         'user'    => $user
     ]);
+});
+
+// =====================================================
+// RECUPERAR CONTRASEÑA (público)
+// =====================================================
+// 1) /forgot envía un código de 6 dígitos al email. Responde siempre lo mismo,
+//    exista o no la cuenta, para no revelar qué emails están registrados.
+$app->post('/auth/password/forgot', function (Request $request, Response $response) use ($conn) {
+    $data  = $request->getParsedBody() ?? [];
+    $email = strtolower(trim((string)($data['email'] ?? '')));
+
+    if (!Mailer::isSafeAddress($email)) {
+        return jsonResponse($response, ['error'=>true,'message'=>'Email inválido'], 400);
+    }
+    if (!checkAuthRateLimit($conn, $request, 'pwd_forgot', $email, 3, 15)
+        || !checkEmailDailyLimit($conn, 'pwd_forgot', $email, EMAIL_SENDS_PER_DAY)) {
+        return rateLimitedResponse($response);
+    }
+    // Cada solicitud cuenta, no solo los fallos: limita el envío de correos.
+    recordAuthFailure($conn, $request, 'pwd_forgot', $email);
+
+    try {
+        $stmt = $conn->prepare("SELECT id, name, email FROM users WHERE email = :e LIMIT 1");
+        $stmt->execute([':e' => $email]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            $code = issueEmailCode($conn, (int)$row['id'], 'reset_password', EMAIL_CODE_TTL_RESET);
+            sendMailAfterResponse((string)$row['email'], 'Tu código para cambiar la contraseña', emailBody(
+                (string)$row['name'],
+                'Has pedido cambiar la contraseña de ChillPocket. Introduce este código en la app:',
+                $code,
+                'Caduca en ' . EMAIL_CODE_TTL_RESET . ' minutos. Si no has sido tú, ignora este correo: tu contraseña no cambiará.'
+            ));
+        }
+    } catch (Throwable $e) {
+        error_log('[auth/password/forgot] ' . $e->getMessage());
+    }
+
+    return jsonResponse($response, [
+        'success' => true,
+        'message' => 'Si el email está registrado, recibirás un código en unos minutos.',
+    ]);
+});
+
+// 2) /reset valida el código, fija la nueva contraseña e inicia sesión.
+$app->post('/auth/password/reset', function (Request $request, Response $response) use ($conn) {
+    $data     = $request->getParsedBody() ?? [];
+    $email    = strtolower(trim((string)($data['email'] ?? '')));
+    $code     = trim((string)($data['code'] ?? ''));
+    $password = (string)($data['new_password'] ?? '');
+
+    if (!checkAuthRateLimit($conn, $request, 'pwd_reset', $email !== '' ? $email : null)
+        || !checkEmailDailyLimit($conn, 'pwd_reset', $email, EMAIL_CODE_FAILS_PER_DAY)) {
+        return rateLimitedResponse($response);
+    }
+    if (!Mailer::isSafeAddress($email) || $code === '') {
+        return jsonResponse($response, ['error'=>true,'message'=>'Faltan el email o el código'], 400);
+    }
+    if (strlen($password) < 6) {
+        return jsonResponse($response, ['error'=>true,'message'=>'La contraseña debe tener al menos 6 caracteres'], 400);
+    }
+
+    $invalid = ['error'=>true,'message'=>'El código no es correcto o ha caducado'];
+    try {
+        $stmt = $conn->prepare("SELECT id, name, email FROM users WHERE email = :e LIMIT 1");
+        $stmt->execute([':e' => $email]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row || !consumeEmailCode($conn, (int)$row['id'], 'reset_password', $code)) {
+            recordAuthFailure($conn, $request, 'pwd_reset', $email);
+            return jsonResponse($response, $invalid, 400);
+        }
+        $userId = (int)$row['id'];
+
+        // Recibir el código demuestra que el email es suyo: queda verificado.
+        $conn->prepare("
+            UPDATE users
+            SET password_hash = :h, email_verified_at = COALESCE(email_verified_at, NOW())
+            WHERE id = :id
+        ")->execute([':h' => password_hash($password, PASSWORD_DEFAULT), ':id' => $userId]);
+
+        clearAuthAttempts($conn, $request, 'pwd_reset', $email);
+        clearAuthAttempts($conn, $request, 'login', $email);
+        AppLog::info('auth', 'contraseña restablecida con código', ['u' => $userId]);
+
+        sendMailAfterResponse((string)$row['email'], 'Tu contraseña se ha cambiado', emailBody(
+            (string)$row['name'],
+            'La contraseña de tu cuenta de ChillPocket se acaba de cambiar.',
+            null,
+            'Si no has sido tú, recupera el acceso desde "¿Olvidaste tu contraseña?" y escríbenos.'
+        ));
+
+        $user = attachEntitlement($conn, fetchUser($conn, $userId));
+        return jsonResponse($response, [
+            'success' => true,
+            'token'   => tokenForUser($user),
+            'user'    => $user,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[auth/password/reset] ' . $e->getMessage());
+        return jsonResponse($response, ['error'=>true,'message'=>'No se pudo cambiar la contraseña'], 500);
+    }
 });
 
 // ================= PROTECTED =================
@@ -1222,6 +1820,18 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (array_key_exists('currency', $data)) {
             $cur = strtoupper(trim((string)$data['currency']));
             if (!preg_match('/^[A-Z]{3}$/', $cur)) return jsonResponse($response, ['error'=>true,'message'=>'Moneda inválida'], 400);
+            $me = fetchUser($conn, (int)$jwt['user_id']);
+            // Solo se puede pasar a una moneda soportada (reenviar la actual, aunque sea antigua, vale).
+            if ($me && strtoupper((string)$me['currency']) !== $cur && !in_array($cur, SUPPORTED_CURRENCIES, true)) {
+                return jsonResponse($response, ['error'=>true,'message'=>'Moneda no soportada'], 400);
+            }
+            if ($me && strtoupper((string)$me['currency']) !== $cur && userHasMoneyData($conn, (int)$jwt['user_id'])) {
+                return jsonResponse($response, [
+                    'error'   => true,
+                    'code'    => 'currency_conversion_required',
+                    'message' => 'Para cambiar la moneda con datos guardados hay que convertirlos (Ajustes → Moneda).',
+                ], 409);
+            }
             $fields[] = 'currency = :currency'; $params[':currency'] = $cur;
         }
         if (array_key_exists('timezone', $data)) {
@@ -1238,12 +1848,129 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             $fields[] = 'avatar_url = :avatar_url'; $params[':avatar_url'] = $data['avatar_url'] ?: null;
         }
 
+        // Perfil financiero (modelo dual). null = sin dato.
+        $uid = (int)$jwt['user_id'];
+        $hasPayday = false;
+        $newPayday = null;
+        if (array_key_exists('income_payday', $data)) {
+            $raw = $data['income_payday'];
+            $payday = null;
+            if ($raw !== null && $raw !== '') {
+                if (!is_numeric($raw) || (float)$raw != (int)$raw || (int)$raw < 1 || (int)$raw > 31) {
+                    return jsonResponse($response, ['error'=>true,'message'=>'Día de cobro inválido'], 400);
+                }
+                $payday = (int)$raw;
+            }
+            $fields[] = 'income_payday = :income_payday'; $params[':income_payday'] = $payday;
+            $hasPayday = true;
+            $newPayday = $payday;
+        }
+        foreach (['income_reference' => 'El ingreso', 'savings_goal_monthly' => 'El objetivo de ahorro'] as $col => $label) {
+            if (!array_key_exists($col, $data)) continue;
+            $raw = $data[$col];
+            $value = null;
+            if ($raw !== null && $raw !== '') {
+                if (!is_numeric($raw)) {
+                    return jsonResponse($response, ['error'=>true,'message'=>"$label no es válido"], 400);
+                }
+                $value = round((float)$raw, 2);
+                if ($value < 0 || $value > 99999999) {
+                    return jsonResponse($response, ['error'=>true,'message'=>"$label está fuera de rango"], 400);
+                }
+            }
+            // $col sale de la lista fija de arriba, nunca del cliente.
+            $fields[] = "$col = :$col"; $params[":$col"] = $value;
+        }
+
         if (!$fields) return jsonResponse($response, ['error'=>true,'message'=>'Sin datos para actualizar'], 400);
 
-        $stmt = $conn->prepare("UPDATE users SET ".implode(', ', $fields)." WHERE id = :id");
-        $stmt->execute($params);
+        // Todo en una transacción con la fila del usuario bloqueada: una petición
+        // simultánea que esté cerrando periodos con el día de cobro anterior
+        // espera o se retira (ver closeFinancialPeriods), así no quedan cierres solapados.
+        try {
+            $conn->beginTransaction();
+            $lock = $conn->prepare("SELECT income_payday FROM users WHERE id = :u FOR UPDATE");
+            $lock->execute([':u' => $uid]);
+            $locked = $lock->fetch(PDO::FETCH_ASSOC);
+            $currentPayday = ($locked && $locked['income_payday'] !== null) ? (int)$locked['income_payday'] : null;
 
-        return jsonResponse($response, ['success'=>true, 'user' => attachEntitlement($conn, fetchUser($conn, (int)$jwt['user_id']))]);
+            $stmt = $conn->prepare("UPDATE users SET ".implode(', ', $fields)." WHERE id = :id");
+            $stmt->execute($params);
+
+            if ($hasPayday && $currentPayday !== $newPayday) {
+                // Los cierres se calcularon con el día de cobro anterior: con el nuevo
+                // se solaparían o dejarían huecos. Son datos derivados de las
+                // transacciones, así que se borran y se recalculan (24 por petición;
+                // las siguientes peticiones completan el resto).
+                global $_paydayCache, $_periodStartCache;
+                $_paydayCache[$uid] = $newPayday;
+                unset($_periodStartCache[$uid]);
+                $conn->prepare("DELETE FROM monthly_closures WHERE user_id = :u")->execute([':u' => $uid]);
+                closeFinancialPeriods($conn, $uid);
+            }
+            $conn->commit();
+        } catch (Throwable $e) {
+            if ($conn->inTransaction()) $conn->rollBack();
+            error_log('[me] ' . $e->getMessage());
+            return jsonResponse($response, ['error'=>true,'message'=>'No se pudo guardar el perfil'], 500);
+        }
+
+        return jsonResponse($response, ['success'=>true, 'user' => attachEntitlement($conn, fetchUser($conn, $uid))]);
+    });
+
+    // ------ VERIFICACIÓN DE EMAIL (no bloqueante; necesaria para mejorar de plan) ------
+    $group->post('/me/email/send-verification', function (Request $request, Response $response) use ($conn) {
+        $uid  = (int)$request->getAttribute('user')['user_id'];
+        $stmt = $conn->prepare("SELECT name, email, email_verified_at FROM users WHERE id = :id LIMIT 1");
+        $stmt->execute([':id' => $uid]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) return jsonResponse($response, ['error'=>true,'message'=>'Usuario no existe'], 404);
+        if (!empty($row['email_verified_at'])) {
+            return jsonResponse($response, ['success'=>true, 'already_verified'=>true]);
+        }
+
+        $email = strtolower((string)$row['email']);
+        if (!checkAuthRateLimit($conn, $request, 'verify_send', $email, 3, 15)
+            || !checkEmailDailyLimit($conn, 'verify_send', $email, EMAIL_SENDS_PER_DAY)) {
+            return rateLimitedResponse($response);
+        }
+        recordAuthFailure($conn, $request, 'verify_send', $email);
+
+        $code = issueEmailCode($conn, $uid, 'verify_email', EMAIL_CODE_TTL_VERIFY);
+        sendMailAfterResponse((string)$row['email'], 'Confirma tu email en ChillPocket', emailBody(
+            (string)$row['name'],
+            'Introduce este código en la app para confirmar tu email:',
+            $code,
+            'Caduca en ' . EMAIL_CODE_TTL_VERIFY . ' minutos. Si no lo has pedido tú, ignora este correo.'
+        ));
+        return jsonResponse($response, ['success'=>true]);
+    });
+
+    $group->post('/me/email/verify', function (Request $request, Response $response) use ($conn) {
+        $uid  = (int)$request->getAttribute('user')['user_id'];
+        $data = $request->getParsedBody() ?? [];
+        $code = trim((string)($data['code'] ?? ''));
+
+        $stmt = $conn->prepare("SELECT email, email_verified_at FROM users WHERE id = :id LIMIT 1");
+        $stmt->execute([':id' => $uid]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) return jsonResponse($response, ['error'=>true,'message'=>'Usuario no existe'], 404);
+        $email = strtolower((string)$row['email']);
+
+        if (empty($row['email_verified_at'])) {
+            if (!checkAuthRateLimit($conn, $request, 'verify', $email)
+                || !checkEmailDailyLimit($conn, 'verify', $email, EMAIL_CODE_FAILS_PER_DAY)) {
+                return rateLimitedResponse($response);
+            }
+            if (!consumeEmailCode($conn, $uid, 'verify_email', $code)) {
+                recordAuthFailure($conn, $request, 'verify', $email);
+                return jsonResponse($response, ['error'=>true,'message'=>'El código no es correcto o ha caducado'], 400);
+            }
+            markEmailVerified($conn, $uid);
+            clearAuthAttempts($conn, $request, 'verify', $email);
+        }
+
+        return jsonResponse($response, ['success'=>true, 'user' => attachEntitlement($conn, fetchUser($conn, $uid))]);
     });
 
     $group->put('/me/password', function (Request $request, Response $response) use ($conn) {
@@ -1255,7 +1982,7 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         if (strlen((string)$data['new_password']) < 6) {
             return jsonResponse($response, ['error'=>true,'message'=>'La nueva contraseña debe tener al menos 6 caracteres'], 400);
         }
-        $stmt = $conn->prepare("SELECT password_hash FROM users WHERE id = :id");
+        $stmt = $conn->prepare("SELECT name, email, password_hash FROM users WHERE id = :id");
         $stmt->execute([':id' => (int)$jwt['user_id']]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row || !password_verify((string)$data['current_password'], (string)$row['password_hash'])) {
@@ -1266,6 +1993,12 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
             ':h'  => password_hash((string)$data['new_password'], PASSWORD_DEFAULT),
             ':id' => (int)$jwt['user_id']
         ]);
+        sendMailAfterResponse((string)$row['email'], 'Tu contraseña se ha cambiado', emailBody(
+            (string)$row['name'],
+            'La contraseña de tu cuenta de ChillPocket se acaba de cambiar desde la app.',
+            null,
+            'Si no has sido tú, recupera el acceso desde "¿Olvidaste tu contraseña?" y escríbenos.'
+        ));
         return jsonResponse($response, ['success'=>true]);
     });
 
@@ -2034,8 +2767,16 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         // que el usuario tenga que importar manualmente.
         fwrite($stream, "\xEF\xBB\xBF");
 
+        // Escape '' = RFC 4180 (solo se doblan las comillas). Con el '\' por defecto,
+        // `a\"b` sale sin doblar y Excel parte la celda; además PHP ≥ 8.4 avisa de
+        // obsolescencia en CADA fila (una línea de log por movimiento exportado).
+        $csvEscape = '';
+        // Texto libre del usuario: un apóstrofo delante evita que Excel/Sheets lo
+        // ejecute como fórmula (=HYPERLINK(...), +cmd, @SUM...).
+        $csvText = static fn($v): string => preg_match('/^[=+\-@\t\r]/', (string)$v) ? "'" . $v : (string)$v;
+
         // Encabezados en español, sin acentos, para máxima compat con Excel.
-        fputcsv($stream, ['fecha','tipo','importe','moneda','categoria','descripcion','metodo_pago','notas','recurrente','meta']);
+        fputcsv($stream, ['fecha','tipo','importe','moneda','categoria','descripcion','metodo_pago','notas','recurrente','meta'], ',', '"', $csvEscape);
 
         foreach ($rows as $row) {
             fputcsv($stream, [
@@ -2043,13 +2784,13 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 $row['tipo'],
                 number_format((float)$row['importe'], 2, '.', ''), // punto decimal, sin miles
                 $row['moneda'],
-                $row['categoria'],
-                $row['descripcion'],
+                $csvText($row['categoria']),
+                $csvText($row['descripcion']),
                 $row['metodo_pago'],
-                $row['notas'],
-                $row['recurrente'],
-                $row['meta'],
-            ]);
+                $csvText($row['notas']),
+                $csvText($row['recurrente']),
+                $csvText($row['meta']),
+            ], ',', '"', $csvEscape);
         }
 
         // Leer el contenido generado.
@@ -2833,18 +3574,31 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         // closeFinancialPeriods ya se ejecutó en requireAuth, así que
         // monthly_closures tiene los datos más recientes posibles.
         $periodStart = currentPeriodStart($conn, $uid);
+        $periodEnd   = nextPeriodStart($periodStart, getUserPayday($conn, $uid)); // exclusivo
 
+        // En la misma pasada: "Mis ahorros" y el "Saldo del mes" del periodo en curso
+        // (solo scope='month', del día de cobro al siguiente). El total del mes
+        // natural de arriba sigue alimentando los gráficos.
         $hist = $conn->prepare("
             SELECT
                 COALESCE((SELECT SUM(mc.surplus) FROM monthly_closures mc WHERE mc.user_id = :u), 0)
               + COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
               - COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='historical' THEN t.amount ELSE 0 END), 0)
-                AS net_total
+                AS net_total,
+              COALESCE(SUM(CASE WHEN t.type='income'  AND t.scope='month'
+                                 AND t.transaction_date >= :ps1 AND t.transaction_date < :pe1 THEN t.amount ELSE 0 END), 0)
+                AS period_income,
+              COALESCE(SUM(CASE WHEN t.type='expense' AND t.scope='month'
+                                 AND t.transaction_date >= :ps2 AND t.transaction_date < :pe2 THEN t.amount ELSE 0 END), 0)
+                AS period_expense
             FROM transactions t
-            WHERE t.user_id = :u
+            WHERE t.user_id = :u2
         ");
-        $hist->execute([':u'=>$uid]);
-        $netTotal = (float)($hist->fetch(PDO::FETCH_ASSOC)['net_total'] ?? 0);
+        $hist->execute([':u'=>$uid, ':u2'=>$uid, ':ps1'=>$periodStart, ':pe1'=>$periodEnd, ':ps2'=>$periodStart, ':pe2'=>$periodEnd]);
+        $histRow       = $hist->fetch(PDO::FETCH_ASSOC) ?: [];
+        $netTotal      = (float)($histRow['net_total'] ?? 0);
+        $periodIncome  = (float)($histRow['period_income'] ?? 0);
+        $periodExpense = (float)($histRow['period_expense'] ?? 0);
 
         $g = $conn->prepare("SELECT COALESCE(SUM(current_amount),0) AS saved FROM savings_goals WHERE user_id = :u");
         $g->execute([':u'=>$uid]);
@@ -2902,9 +3656,14 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
                 'total_expense' => round((float)$prevRow['total_expense'], 2),
             ],
             'saved_this_month'     => round($savedThisMonth, 2),
-            // Campo nuevo (Fase 2): inicio del periodo financiero actual.
-            // El frontend de Fase 1 lo ignora; Fase 3 lo usará para filtrar.
+            // Periodo financiero en curso (del día de cobro al siguiente, exclusivo).
             'current_period_start' => $periodStart,
+            'next_period_start'    => $periodEnd,
+            // "Saldo del mes" del modelo dual: solo scope='month' dentro del periodo.
+            // total_income/total_expense/balance siguen siendo del mes natural (gráficos).
+            'period_income'        => round($periodIncome, 2),
+            'period_expense'       => round($periodExpense, 2),
+            'period_balance'       => round($periodIncome - $periodExpense, 2),
         ];
 
         // ---- monthly ----
@@ -3229,6 +3988,351 @@ $app->group('', function (RouteCollectorProxy $group) use ($conn) {
         ]);
     });
 
+    // ------ USO DE LA APP (monitoreo anónimo y agregado) ------
+    // Solo día, evento, plataforma y contadores: ningún dato personal.
+    $group->post('/usage', function (Request $request, Response $response) use ($conn) {
+        $data = $request->getParsedBody() ?? [];
+        $invalid = fn(string $m): Response => jsonResponse($response, ['error' => true, 'message' => $m], 400);
+
+        $day   = (string)($data['day'] ?? '');
+        $dt    = DateTimeImmutable::createFromFormat('!Y-m-d', $day);
+        $today = new DateTimeImmutable('today');
+        if (!$dt || $dt->format('Y-m-d') !== $day || $dt < $today->modify('-8 days') || $dt > $today->modify('+1 day')) {
+            return $invalid('Día no válido');
+        }
+        $platform = (string)($data['platform'] ?? '');
+        if (!in_array($platform, ['ios', 'android', 'web'], true)) return $invalid('Plataforma no válida');
+
+        $events = $data['events'] ?? null;
+        if (!is_array($events) || !$events || count($events) > 60) return $invalid('Eventos no válidos');
+        $first = $data['first_today'] ?? [];
+        if (!is_array($first) || count($first) > 60) return $invalid('first_today no válido');
+        $isFirst = [];
+        foreach ($first as $name) {
+            if (is_string($name)) $isFirst[strtolower($name)] = true;
+        }
+
+        $counts = [];
+        foreach ($events as $name => $count) {
+            if (!is_string($name) || !preg_match('/^[A-Za-z0-9_.:-]{1,64}$/', $name)) return $invalid('Nombre de evento no válido');
+            if (!is_int($count) || $count < 1 || $count > 500) return $invalid('Cuenta no válida');
+            // Una sola fila por evento aunque llegue con otra capitalización.
+            $name = strtolower($name);
+            $counts[$name] = ($counts[$name] ?? 0) + $count;
+        }
+
+        // Los nombres los elige el cliente: con un tope de filas por día, una cuenta
+        // no puede llenar la tabla inventándolos. Superado, solo suman los que ya
+        // existen ese día (lo normal son unas pocas decenas por plataforma).
+        $st = $conn->prepare("SELECT COUNT(*) FROM usage_daily WHERE day = ?");
+        $st->execute([$day]);
+        if ((int)$st->fetchColumn() >= USAGE_MAX_ROWS_PER_DAY) {
+            $names = array_map('strval', array_keys($counts));
+            $st = $conn->prepare("
+                SELECT event FROM usage_daily
+                WHERE day = ? AND platform = ? AND event IN (" . implode(', ', array_fill(0, count($names), '?')) . ")
+            ");
+            $st->execute(array_merge([$day, $platform], $names));
+            $known = array_flip(array_map('strval', $st->fetchAll(PDO::FETCH_COLUMN)));
+            $counts = array_filter($counts, fn($name): bool => isset($known[(string)$name]), ARRAY_FILTER_USE_KEY);
+            if (!$counts) return jsonResponse($response, ['success' => true]);
+        }
+
+        $rows = [];
+        $params = [];
+        foreach ($counts as $name => $count) {
+            $rows[] = '(?, ?, ?, ?, ?)';
+            array_push($params, $day, (string)$name, $platform, $count, isset($isFirst[(string)$name]) ? 1 : 0);
+        }
+        $conn->prepare("
+            INSERT INTO usage_daily (day, event, platform, events, users)
+            VALUES " . implode(', ', $rows) . "
+            ON DUPLICATE KEY UPDATE events = events + VALUES(events), users = users + VALUES(users)
+        ")->execute($params);
+
+        return jsonResponse($response, ['success' => true]);
+    });
+
+    // ------ ADMINISTRACIÓN (ADMIN_EMAILS) ------
+    $group->get('/admin/usage', function (Request $request, Response $response) use ($conn) {
+        if (!adminUser($conn, $request)) {
+            return jsonResponse($response, ['error' => true, 'message' => 'No autorizado'], 403);
+        }
+        $days = (int)($request->getQueryParams()['days'] ?? 30);
+        if (!in_array($days, [7, 30, 90], true)) $days = 30;
+        $to   = new DateTimeImmutable('today');
+        $from = $to->modify('-' . ($days - 1) . ' days');
+        $range = [':f' => $from->format('Y-m-d'), ':t' => $to->format('Y-m-d')];
+
+        $st = $conn->prepare("
+            SELECT event, SUM(events) AS events, SUM(users) AS users
+            FROM usage_daily WHERE day BETWEEN :f AND :t
+            GROUP BY event ORDER BY events DESC LIMIT 200
+        ");
+        $st->execute($range);
+        $totals = array_map(fn(array $r): array => [
+            'event' => (string)$r['event'], 'events' => (int)$r['events'], 'users' => (int)$r['users'],
+        ], $st->fetchAll(PDO::FETCH_ASSOC));
+
+        $st = $conn->prepare("
+            SELECT platform, SUM(events) AS events FROM usage_daily
+            WHERE day BETWEEN :f AND :t GROUP BY platform ORDER BY events DESC
+        ");
+        $st->execute($range);
+        $byPlatform = array_map(fn(array $r): array => [
+            'platform' => (string)$r['platform'], 'events' => (int)$r['events'],
+        ], $st->fetchAll(PDO::FETCH_ASSOC));
+
+        $st = $conn->prepare("
+            SELECT day, SUM(events) AS events, SUM(users) AS users FROM usage_daily
+            WHERE event = 'app_open' AND day BETWEEN :f AND :t GROUP BY day
+        ");
+        $st->execute($range);
+        $byDay = [];
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) $byDay[(string)$r['day']] = $r;
+        $daily = [];
+        for ($d = $from; $d <= $to; $d = $d->modify('+1 day')) {
+            $k = $d->format('Y-m-d');
+            $daily[] = ['day' => $k, 'events' => (int)($byDay[$k]['events'] ?? 0), 'users' => (int)($byDay[$k]['users'] ?? 0)];
+        }
+
+        $st = $conn->prepare("
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(created_at >= :f), 0) AS new_users,
+                   COALESCE(SUM(email_verified_at IS NOT NULL), 0) AS verified
+            FROM users
+        ");
+        $st->execute([':f' => $range[':f']]);
+        $u = $st->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'new_users' => 0, 'verified' => 0];
+        $usersTotal = (int)$u['total'];
+
+        $st = $conn->prepare("SELECT COUNT(DISTINCT user_id) FROM transactions WHERE created_at >= :f");
+        $st->execute([':f' => $range[':f']]);
+        $usersActive = (int)$st->fetchColumn();
+
+        // Plan efectivo de cada usuario (el de mayor rango entre sus filas vigentes).
+        $st = $conn->query("
+            SELECT best, COUNT(*) AS users FROM (
+                SELECT e.user_id,
+                       MAX(CASE p.code WHEN 'pro_freelance' THEN 4 WHEN 'family' THEN 3 WHEN 'plus' THEN 2 ELSE 1 END) AS best
+                FROM user_entitlements e
+                JOIN plans p ON p.id = COALESCE(e.plan_id, (SELECT p2.id FROM plans p2 WHERE p2.code = e.plan_code LIMIT 1))
+                WHERE e.is_active = 1 AND (e.expires_at IS NULL OR e.expires_at >= CURDATE())
+                GROUP BY e.user_id
+            ) x GROUP BY best
+        ");
+        $rankToCode = [2 => 'plus', 3 => 'family', 4 => 'pro_freelance'];
+        $paid = [];
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $code = $rankToCode[(int)$r['best']] ?? null;
+            if ($code) $paid[$code] = (int)$r['users'];
+        }
+        $plans = [['plan_code' => 'free', 'users' => max(0, $usersTotal - array_sum($paid))]];
+        foreach ($rankToCode as $code) {
+            $plans[] = ['plan_code' => $code, 'users' => $paid[$code] ?? 0];
+        }
+
+        return jsonResponse($response, [
+            'days' => $days,
+            'from' => $range[':f'],
+            'to'   => $range[':t'],
+            'overview' => [
+                'users_total'  => $usersTotal,
+                'users_new'    => (int)$u['new_users'],
+                'users_active' => $usersActive,
+                'verified_pct' => $usersTotal > 0 ? round((int)$u['verified'] * 100 / $usersTotal, 1) : 0,
+                'plans'        => $plans,
+            ],
+            'totals'      => $totals,
+            'by_platform' => $byPlatform,
+            'daily'       => $daily,
+        ]);
+    });
+
+    // Diagnóstico del correo en producción: envío inmediato (devuelve el error
+    // SMTP) y otro por la vía diferida que usan los códigos (queda en el log).
+    $group->post('/admin/mail-test', function (Request $request, Response $response) use ($conn) {
+        $admin = adminUser($conn, $request);
+        if (!$admin) {
+            return jsonResponse($response, ['error' => true, 'message' => 'No autorizado'], 403);
+        }
+        $email = (string)$admin['email'];
+        if (!checkAuthRateLimit($conn, $request, 'mail_test', $email, 5, 15)) {
+            return rateLimitedResponse($response);
+        }
+        recordAuthFailure($conn, $request, 'mail_test', $email);
+
+        $config = [];
+        foreach (['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'] as $key) {
+            $config[$key] = appConfig($key) !== '';
+        }
+        $config['openssl'] = extension_loaded('openssl');
+        $config['litespeed_finish_request'] = function_exists('litespeed_finish_request');
+        $config['fastcgi_finish_request'] = function_exists('fastcgi_finish_request');
+
+        $mailer = Mailer::fromConfig();
+        if ($mailer === null) {
+            AppLog::error('mail', 'prueba: SMTP sin configurar');
+            return jsonResponse($response, [
+                'success' => false, 'to' => $email, 'config' => $config,
+                'message' => 'Faltan claves SMTP o SMTP_FROM no es una dirección válida.',
+            ]);
+        }
+        try {
+            $body = emailBody((string)$admin['name'], 'Si lees esto, el servidor envía correos correctamente (envío inmediato).', null, 'Enviado desde el panel de uso de ChillPocket.');
+            $mailer->send($email, 'Prueba de correo de ChillPocket (inmediato)', $body['text'], $body['html']);
+            AppLog::info('mail', 'prueba inmediata enviada', ['para' => AppLog::maskEmail($email)]);
+        } catch (Throwable $e) {
+            AppLog::error('mail', 'prueba inmediata fallida: ' . $e->getMessage());
+            return jsonResponse($response, ['success' => false, 'to' => $email, 'message' => $e->getMessage(), 'config' => $config]);
+        }
+        sendMailAfterResponse($email, 'Prueba de correo de ChillPocket (diferido)', emailBody(
+            (string)$admin['name'],
+            'Este correo usa la misma vía que los códigos de verificación y de contraseña.',
+            null,
+            'Si te llega el inmediato pero no este, el problema está en el envío diferido: revisa el log.'
+        ));
+        return jsonResponse($response, [
+            'success' => true, 'to' => $email, 'config' => $config,
+            'message' => 'Enviado. En unos segundos llegará un segundo correo por la vía diferida (la de los códigos).',
+        ]);
+    });
+
+    // ------ DIVISAS ------
+    $group->get('/currency/rate', function (Request $request, Response $response) use ($conn) {
+        $to = $request->getQueryParams()['to'] ?? '';
+        $to = strtoupper(trim(is_string($to) ? $to : ''));
+        if (!in_array($to, SUPPORTED_CURRENCIES, true)) {
+            return jsonResponse($response, ['error' => true, 'message' => 'Moneda no soportada'], 400);
+        }
+        $me   = fetchUser($conn, (int)$request->getAttribute('user')['user_id']);
+        $from = strtoupper((string)($me['currency'] ?? 'EUR'));
+        if (!preg_match('/^[A-Z]{3}$/', $from)) $from = 'EUR';
+        $rate = exchangeRate($conn, $from, $to);
+        if ($rate === null) {
+            return jsonResponse($response, ['error' => true, 'message' => 'No se pudo obtener el cambio. Inténtalo más tarde.'], 502);
+        }
+        return jsonResponse($response, [
+            'from' => $from, 'to' => $to, 'rate' => $rate['rate'], 'date' => $rate['date'], 'source' => EXCHANGE_RATE_SOURCE,
+        ]);
+    });
+
+    // Cambia la moneda de la cuenta convirtiendo TODOS sus importes con el cambio
+    // actual. El cliente manda el cambio que ha enseñado al usuario: si ya no es
+    // ese, 409 y se vuelve a confirmar.
+    $group->post('/me/currency', function (Request $request, Response $response) use ($conn) {
+        $uid  = (int)$request->getAttribute('user')['user_id'];
+        $data = $request->getParsedBody() ?? [];
+        $to   = strtoupper(trim(is_string($data['currency'] ?? null) ? $data['currency'] : ''));
+        $shownRate = $data['rate'] ?? null;
+        if (!in_array($to, SUPPORTED_CURRENCIES, true)) {
+            return jsonResponse($response, ['error' => true, 'message' => 'Moneda no soportada'], 400);
+        }
+        if (!is_numeric($shownRate) || (float)$shownRate <= 0) {
+            return jsonResponse($response, ['error' => true, 'message' => 'Cambio no válido'], 400);
+        }
+
+        $me = fetchUser($conn, $uid);
+        if (!$me) return jsonResponse($response, ['error' => true, 'message' => 'Usuario no existe'], 404);
+        $from = strtoupper((string)$me['currency']);
+        $zero = ['transactions' => 0, 'recurring' => 0, 'budgets' => 0, 'goals' => 0];
+        if ($from === $to) {
+            return jsonResponse($response, ['success' => true, 'user' => attachEntitlement($conn, $me), 'rate' => 1, 'converted' => $zero]);
+        }
+
+        $email = strtolower((string)$me['email']);
+        // Tope por cuenta, no por IP: la IP la comparten NAT/CGNAT y X-Forwarded-For
+        // se falsifica (otro podría agotar el cupo de un usuario con su IP).
+        if (!checkEmailDailyLimit($conn, 'currency', $email, 5)) {
+            AppLog::warning('currency', 'tope diario de conversiones alcanzado', ['u' => $uid]);
+            return rateLimitedResponse($response, 1440);
+        }
+
+        $rate = exchangeRate($conn, $from, $to);
+        if ($rate === null) {
+            return jsonResponse($response, ['error' => true, 'message' => 'No se pudo obtener el cambio. Inténtalo más tarde.'], 502);
+        }
+        if (abs($rate['rate'] - (float)$shownRate) > $rate['rate'] * 0.000001) {
+            return jsonResponse($response, [
+                'error' => true, 'code' => 'rate_changed', 'rate' => $rate['rate'], 'date' => $rate['date'],
+                'message' => 'El cambio se ha actualizado. Revísalo y confirma de nuevo.',
+            ], 409);
+        }
+        // Texto en notación decimal (nunca "1.0E-5") y CAST en SQL: un texto sin CAST
+        // se opera en DOUBLE y ROUND redondea al par (1,01 × 0,5 → 0,50 en vez de 0,51).
+        $k = rtrim(rtrim(number_format((float)$rate['rate'], 8, '.', ''), '0'), '.');
+        $kSql = 'CAST(:k AS DECIMAL(18,8))';
+
+        try {
+            $conn->beginTransaction();
+            $lock = $conn->prepare("SELECT currency FROM users WHERE id = :u FOR UPDATE");
+            $lock->execute([':u' => $uid]);
+            if (strtoupper((string)$lock->fetchColumn()) !== $from) {
+                $conn->rollBack();
+                return jsonResponse($response, ['error' => true, 'code' => 'currency_changed', 'message' => 'La moneda ya ha cambiado. Recarga e inténtalo de nuevo.'], 409);
+            }
+
+            $run = function (string $sql) use ($conn, $uid, $k): int {
+                $st = $conn->prepare($sql);
+                $st->execute([':k' => $k, ':u' => $uid]);
+                return $st->rowCount();
+            };
+            $converted = [
+                'transactions' => $run("UPDATE transactions SET amount = ROUND(amount * $kSql, 2) WHERE user_id = :u"),
+                'recurring'    => $run("UPDATE recurring_expenses SET amount = ROUND(amount * $kSql, 2) WHERE user_id = :u"),
+                'budgets'      => $run("UPDATE budgets SET amount = ROUND(amount * $kSql, 2) WHERE user_id = :u"),
+                'goals'        => 0,
+            ];
+            // El objetivo tiene CHECK (> 0): uno diminuto no puede quedarse en 0,00.
+            $goals = $conn->prepare("
+                UPDATE savings_goals
+                SET target_amount = GREATEST(0.01, ROUND(target_amount * CAST(:k1 AS DECIMAL(18,8)), 2)),
+                    current_amount = ROUND(current_amount * CAST(:k2 AS DECIMAL(18,8)), 2)
+                WHERE user_id = :u
+            ");
+            $goals->execute([':k1' => $k, ':k2' => $k, ':u' => $uid]);
+            $converted['goals'] = $goals->rowCount();
+
+            $conn->prepare("
+                UPDATE users
+                SET currency = :c,
+                    income_reference = ROUND(income_reference * CAST(:k1 AS DECIMAL(18,8)), 2),
+                    savings_goal_monthly = ROUND(savings_goal_monthly * CAST(:k2 AS DECIMAL(18,8)), 2)
+                WHERE id = :u
+            ")->execute([':c' => $to, ':k1' => $k, ':k2' => $k, ':u' => $uid]);
+
+            // Los cierres son sumas de transacciones: se recalculan con los importes nuevos.
+            $conn->prepare("DELETE FROM monthly_closures WHERE user_id = :u")->execute([':u' => $uid]);
+            closeFinancialPeriods($conn, $uid);
+
+            $conn->prepare("
+                INSERT INTO currency_conversions (user_id, from_currency, to_currency, rate, rate_date, transactions)
+                VALUES (:u, :f, :t, :k, :d, :n)
+            ")->execute([':u' => $uid, ':f' => $from, ':t' => $to, ':k' => $k, ':d' => $rate['date'], ':n' => $converted['transactions']]);
+
+            $conn->commit();
+        } catch (Throwable $e) {
+            if ($conn->inTransaction()) $conn->rollBack();
+            AppLog::error('currency', "conversión {$from}→{$to} fallida: " . $e->getMessage());
+            $tooBig = stripos($e->getMessage(), 'out of range') !== false || (string)$e->getCode() === '22003';
+            return jsonResponse($response, [
+                'error' => true,
+                'message' => $tooBig
+                    ? 'Algún importe sería demasiado grande en la nueva moneda. No se ha cambiado nada.'
+                    : 'No se pudo convertir la moneda. No se ha cambiado nada.',
+            ], 500);
+        }
+        recordAuthFailure($conn, $request, 'currency', $email); // cuenta para el límite diario
+        AppLog::info('currency', "conversión {$from}→{$to}", ['u' => $uid, 'rate' => $k] + $converted);
+
+        return jsonResponse($response, [
+            'success' => true,
+            'user' => attachEntitlement($conn, fetchUser($conn, $uid)),
+            'rate' => $rate['rate'],
+            'converted' => $converted,
+        ]);
+    });
+
 })->add(requireAuth($conn));
 
 // =====================================================
@@ -3375,11 +4479,11 @@ $app->post('/billing/webhook/revenuecat', function (Request $request, Response $
                 $existingId = $chkSub->fetchColumn();
 
                 if ($existingId) {
-                    $conn->prepare("UPDATE user_entitlements SET is_active = 1, plan_code = :p, source = :s, expires_at = :exp WHERE id = :id")
-                         ->execute([':p' => $planCode, ':s' => $source, ':exp' => $expiresAt, ':id' => $existingId]);
+                    $conn->prepare("UPDATE user_entitlements SET is_active = 1, plan_code = :p, plan_id = (SELECT id FROM plans WHERE code = :pc), source = :s, expires_at = :exp WHERE id = :id")
+                         ->execute([':p' => $planCode, ':pc' => $planCode, ':s' => $source, ':exp' => $expiresAt, ':id' => $existingId]);
                 } else {
-                    $conn->prepare("INSERT INTO user_entitlements (user_id, plan_code, is_active, source, expires_at, external_subscription_id) VALUES (:u, :p, 1, :s, :exp, :sub)")
-                         ->execute([':u' => $userId, ':p' => $planCode, ':s' => $source, ':exp' => $expiresAt, ':sub' => $subscriptionId]);
+                    $conn->prepare("INSERT INTO user_entitlements (user_id, plan_code, plan_id, is_active, source, expires_at, external_subscription_id) VALUES (:u, :p, (SELECT id FROM plans WHERE code = :pc), 1, :s, :exp, :sub)")
+                         ->execute([':u' => $userId, ':p' => $planCode, ':pc' => $planCode, ':s' => $source, ':exp' => $expiresAt, ':sub' => $subscriptionId]);
                 }
 
                 error_log('[rc_webhook] activado plan=' . $planCode . ' source=' . $source . ' expires=' . ($expiresAt ?? 'NULL') . ' sub=' . $subscriptionId);
@@ -3466,11 +4570,11 @@ $app->post('/billing/webhook/revenuecat', function (Request $request, Response $
                 $existingId2 = $chkSub2->fetchColumn();
 
                 if ($existingId2) {
-                    $conn->prepare("UPDATE user_entitlements SET is_active = 1, plan_code = :p, source = :s, expires_at = :exp WHERE id = :id")
-                         ->execute([':p' => $planCode, ':s' => $source, ':exp' => $ltExpires, ':id' => $existingId2]);
+                    $conn->prepare("UPDATE user_entitlements SET is_active = 1, plan_code = :p, plan_id = (SELECT id FROM plans WHERE code = :pc), source = :s, expires_at = :exp WHERE id = :id")
+                         ->execute([':p' => $planCode, ':pc' => $planCode, ':s' => $source, ':exp' => $ltExpires, ':id' => $existingId2]);
                 } else {
-                    $conn->prepare("INSERT INTO user_entitlements (user_id, plan_code, is_active, source, expires_at, external_subscription_id) VALUES (:u, :p, 1, :s, :exp, :sub)")
-                         ->execute([':u' => $userId, ':p' => $planCode, ':s' => $source, ':exp' => $ltExpires, ':sub' => $ltSubId]);
+                    $conn->prepare("INSERT INTO user_entitlements (user_id, plan_code, plan_id, is_active, source, expires_at, external_subscription_id) VALUES (:u, :p, (SELECT id FROM plans WHERE code = :pc), 1, :s, :exp, :sub)")
+                         ->execute([':u' => $userId, ':p' => $planCode, ':pc' => $planCode, ':s' => $source, ':exp' => $ltExpires, ':sub' => $ltSubId]);
                 }
 
                 error_log('[rc_webhook] NON_RENEWING_PURCHASE activado plan=' . $planCode . ' source=' . $source . ' sub=' . $ltSubId);
@@ -3497,50 +4601,5 @@ $app->post('/billing/webhook/revenuecat', function (Request $request, Response $
 
     return jsonResponse($response, ['ok' => true]);
 });
-
-// ================= ERRORS =================
-// displayErrorDetails=false en producción: no exponer stack/SQL al cliente.
-// (Los errores siguen registrándose en el log del servidor.)
-$errorMiddleware = $app->addErrorMiddleware(false, true, true);
-
-$errorMiddleware->setErrorHandler(\Slim\Exception\HttpNotFoundException::class,
-    function (Request $request, Throwable $e, bool $d) use ($app) {
-        $r = $app->getResponseFactory()->createResponse();
-        $r->getBody()->write(json_encode(['error'=>true,'message'=>'Ruta no encontrada']));
-        return $r->withHeader('Content-Type','application/json')
-                 ->withHeader('Access-Control-Allow-Origin','*')
-                 ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS)
-                 ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
-                 ->withStatus(404);
-    });
-
-$errorMiddleware->setErrorHandler(\Slim\Exception\HttpMethodNotAllowedException::class,
-    function (Request $request, Throwable $e, bool $d) use ($app) {
-        $r = $app->getResponseFactory()->createResponse();
-        $r->getBody()->write(json_encode(['error'=>true,'message'=>'Método no permitido']));
-        return $r->withHeader('Content-Type','application/json')
-                 ->withHeader('Access-Control-Allow-Origin','*')
-                 ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS)
-                 ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
-                 ->withStatus(405);
-    });
-
-$errorMiddleware->setDefaultErrorHandler(
-    function (Request $request, Throwable $e, bool $d, bool $l, bool $ld) use ($app) {
-        // Loggeamos el detalle real en el error_log del servidor (queda en
-        // hPanel → Errors), pero al cliente solo le devolvemos un mensaje
-        // neutro. Nunca exponemos file/line/class/queries en producción.
-        error_log(
-            '[default-error] ' . get_class($e) . ': ' . $e->getMessage()
-            . ' in ' . $e->getFile() . ':' . $e->getLine()
-        );
-        $r = $app->getResponseFactory()->createResponse();
-        $r->getBody()->write(json_encode(['error'=>true,'message'=>$d ? $e->getMessage() : 'Error interno del servidor']));
-        return $r->withHeader('Content-Type','application/json')
-                 ->withHeader('Access-Control-Allow-Origin','*')
-                 ->withHeader('Access-Control-Allow-Methods', ALLOWED_METHODS)
-                 ->withHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS)
-                 ->withStatus(500);
-    });
 
 $app->run();

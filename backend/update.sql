@@ -1,5 +1,5 @@
 -- =====================================================
--- ChillPocket API · update.sql · v1.5.0 (Fase 1 Billing)
+-- ChillPocket API · update.sql (migraciones acumuladas §5–§13)
 -- Idempotente: se puede ejecutar varias veces sin romper nada.
 -- Probado en MariaDB 10.3+ / MySQL 8.0+.
 -- =====================================================
@@ -65,16 +65,10 @@ CREATE TABLE IF NOT EXISTS `billing_events` (
     UNIQUE KEY `uniq_external_event` (`provider`, `external_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 5.4) Backfill "early adopter": cualquier usuario YA existente cuando se aplica
--- esta migración recibe Plus gratis de por vida. Idempotente: solo inserta
--- para usuarios sin ninguna fila activa en user_entitlements.
-INSERT INTO `user_entitlements` (`user_id`, `plan_code`, `is_active`, `source`)
-SELECT u.`id`, 'plus', 1, 'early_adopter'
-FROM `users` u
-WHERE NOT EXISTS (
-    SELECT 1 FROM `user_entitlements` e
-    WHERE e.`user_id` = u.`id` AND e.`is_active` = 1
-);
+-- 5.4) Backfill "early adopter" (v1.5.0) — YA APLICADO en producción y retirado.
+-- Daba Plus de por vida a los usuarios sin fila activa. Como este script se
+-- re-ejecuta entero, también se lo regalaba a cualquier usuario registrado
+-- después. Las filas base (plan gratis) se crean ahora en §11c y en el registro.
 
 -- =====================================================
 -- 6) RATE LIMITING en /auth/* (v1.6.0)
@@ -229,13 +223,8 @@ PREPARE _stmt FROM @sql; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 --      (nunca por el cliente directamente). VARCHAR(255) es suficiente para
 --      "Images/{user_id}/{32hex}.jpg".
 --
--- 10b) Flag receipt_photos en planes plus y lifetime:
---      Añade "receipt_photos":true al features_json de plus y lifetime.
---      Se usa JSON_SET para no sobreescribir otras features existentes.
---      El plan 'free' mantiene receipt_photos ausente/false.
---      Family y pro_freelance no son vendibles en esta fase → se ignoran.
---      Todos los UPDATE usan JSON_EXTRACT para ser idempotentes:
---      no modifican si el flag ya está en el valor correcto.
+-- 10b) Features completas de cada plan, con receipt_photos en todos los de
+--      pago (free = false). Ver el bloque 10b más abajo.
 -- =====================================================
 
 -- 10a) receipt_path en transactions ------------------
@@ -251,31 +240,143 @@ SET @sql_rp = IF(@col_rp = 0,
 );
 PREPARE _stmt FROM @sql_rp; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
--- 10b) receipt_photos: true en plan 'plus' -----------
-UPDATE `plans`
-  SET `features_json` = JSON_SET(`features_json`, '$.receipt_photos', CAST('true' AS JSON))
-  WHERE `code` = 'plus'
-    AND (JSON_EXTRACT(`features_json`, '$.receipt_photos') IS NULL
-         OR JSON_EXTRACT(`features_json`, '$.receipt_photos') != CAST('true' AS JSON));
+-- 10b) Features de cada plan (incluye receipt_photos) ---
+-- La versión anterior usaba CAST('true' AS JSON), que MariaDB no admite: el
+-- script se detenía aquí y Plus nunca recibía receipt_photos. Ahora se fija el
+-- JSON completo de cada plan. Idempotente (siempre escribe el mismo valor).
+-- Si cambias las features de un plan, hazlo aquí y vuelve a ejecutar.
+UPDATE `plans` SET `features_json` = '{"advanced_analytics":false,"export":false,"web_access":false,"cloud_backup":false,"family_mode":false,"fiscal_reports":false,"receipt_photos":false}' WHERE `code` = 'free';
+UPDATE `plans` SET `features_json` = '{"advanced_analytics":true,"export":true,"web_access":true,"cloud_backup":true,"family_mode":false,"fiscal_reports":false,"receipt_photos":true}' WHERE `code` = 'plus';
+UPDATE `plans` SET `features_json` = '{"advanced_analytics":true,"export":true,"web_access":true,"cloud_backup":true,"family_mode":true,"fiscal_reports":false,"receipt_photos":true}' WHERE `code` = 'family';
+UPDATE `plans` SET `features_json` = '{"advanced_analytics":true,"export":true,"web_access":true,"cloud_backup":true,"family_mode":false,"fiscal_reports":true,"receipt_photos":true}' WHERE `code` = 'pro_freelance';
 
--- 10b) receipt_photos: true en plan 'lifetime' -------
--- (El plan lifetime no existe como código independiente en la tabla;
---  las compras lifetime usan el plan_code 'plus' con source='lifetime'.
---  Si en el futuro se añade un código 'lifetime' separado, el UPDATE
---  siguiente lo cubrirá sin romper nada porque el WHERE no matchará si
---  el código no existe todavía.)
-UPDATE `plans`
-  SET `features_json` = JSON_SET(`features_json`, '$.receipt_photos', CAST('true' AS JSON))
-  WHERE `code` = 'lifetime'
-    AND (JSON_EXTRACT(`features_json`, '$.receipt_photos') IS NULL
-         OR JSON_EXTRACT(`features_json`, '$.receipt_photos') != CAST('true' AS JSON));
+-- =====================================================
+-- 11) Plan editable por usuario (user_entitlements.plan_id)
+--   11a) Columna plan_id → plans.id. Es la que manda. Para cambiar el plan de
+--        un usuario a mano, edita plan_id en su fila base: source='manual' (o
+--        'early_adopter' si es un early adopter, que no tiene fila manual):
+--        1 = Gratis · 2 = Plus · 3 = Familia · 4 = Pro Freelance.
+--        Comprueba antes los ids reales con: SELECT id, code FROM plans;
+--        plan_code queda como copia informativa; el backend la corrige sola.
+--   11b) Rellena plan_id en las filas existentes a partir de plan_code.
+--   11c) Fila base (plan gratis, source='manual') para cada usuario que no
+--        tenga fila base (manual o early_adopter). El backend la crea al
+--        registrar. Los webhooks de pago nunca desactivan filas 'manual'.
+-- =====================================================
+SET @col_pid = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'user_entitlements'
+      AND COLUMN_NAME  = 'plan_id'
+);
+SET @sql_pid = IF(@col_pid = 0,
+    "ALTER TABLE `user_entitlements` ADD COLUMN `plan_id` INT(11) NULL DEFAULT NULL AFTER `plan_code`",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql_pid; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
 
--- 10b) receipt_photos: false en plan 'free' ----------
--- Idempotente: solo actualiza si aún no está puesto a false.
-UPDATE `plans`
-  SET `features_json` = JSON_SET(`features_json`, '$.receipt_photos', CAST('false' AS JSON))
-  WHERE `code` = 'free'
-    AND (JSON_EXTRACT(`features_json`, '$.receipt_photos') IS NULL
-         OR JSON_EXTRACT(`features_json`, '$.receipt_photos') != CAST('false' AS JSON));
+SET @fk_pid = (
+    SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME        = 'user_entitlements'
+      AND CONSTRAINT_NAME   = 'user_entitlements_plan_fk'
+);
+SET @sql_fk = IF(@fk_pid = 0,
+    "ALTER TABLE `user_entitlements` ADD CONSTRAINT `user_entitlements_plan_fk` FOREIGN KEY (`plan_id`) REFERENCES `plans` (`id`) ON UPDATE CASCADE",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql_fk; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+UPDATE `user_entitlements` e
+JOIN `plans` p ON p.`code` = e.`plan_code`
+SET e.`plan_id` = p.`id`
+WHERE e.`plan_id` IS NULL;
+
+INSERT INTO `user_entitlements` (`user_id`, `plan_code`, `plan_id`, `is_active`, `source`)
+SELECT u.`id`, p.`code`, p.`id`, 1, 'manual'
+FROM `users` u
+JOIN `plans` p ON p.`code` = 'free'
+WHERE NOT EXISTS (
+    SELECT 1 FROM `user_entitlements` e
+    WHERE e.`user_id` = u.`id` AND e.`source` IN ('manual', 'early_adopter')
+);
+
+-- =====================================================
+-- 12) Verificación de email y recuperación de contraseña (SMTP)
+--   12a) users.email_verified_at: NULL = sin verificar.
+--   12b) email_codes: códigos de 6 dígitos de un solo uso. Solo se guarda su
+--        HMAC, con caducidad y contador de intentos.
+--   12c) Las cuentas de Google ya llegan con el email verificado por Google.
+-- =====================================================
+SET @col_ev = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'users'
+      AND COLUMN_NAME  = 'email_verified_at'
+);
+SET @sql_ev = IF(@col_ev = 0,
+    "ALTER TABLE `users` ADD COLUMN `email_verified_at` DATETIME NULL DEFAULT NULL",
+    'SELECT 1'
+);
+PREPARE _stmt FROM @sql_ev; EXECUTE _stmt; DEALLOCATE PREPARE _stmt;
+
+CREATE TABLE IF NOT EXISTS `email_codes` (
+    `id`         INT(11)     NOT NULL AUTO_INCREMENT,
+    `user_id`    INT(11)     NOT NULL,
+    `purpose`    VARCHAR(32) NOT NULL,
+    `code_hash`  CHAR(64)    NOT NULL,
+    `attempts`   TINYINT(4)  NOT NULL DEFAULT 0,
+    `expires_at` DATETIME    NOT NULL,
+    `used_at`    DATETIME    DEFAULT NULL,
+    `created_at` DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_user_purpose` (`user_id`, `purpose`),
+    CONSTRAINT `email_codes_user_fk` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+UPDATE `users`
+SET `email_verified_at` = COALESCE(`created_at`, NOW())
+WHERE `google_sub` IS NOT NULL
+  AND `email_verified_at` IS NULL;
+
+-- =====================================================
+-- 13) Monitoreo de uso y divisas
+--   13a) usage_daily: uso de la app anónimo y agregado (día, evento, plataforma
+--        y contadores). Ningún dato personal.
+--   13b) exchange_rates: caché compartida de tipos de cambio del BCE (12 h).
+--   13c) currency_conversions: registro de cada cambio de moneda de una cuenta
+--        (permite auditar o deshacer con el cambio inverso).
+-- =====================================================
+CREATE TABLE IF NOT EXISTS `usage_daily` (
+    `day`      DATE         NOT NULL,
+    `event`    VARCHAR(64)  NOT NULL,
+    `platform` VARCHAR(10)  NOT NULL,
+    `events`   INT UNSIGNED NOT NULL DEFAULT 0,
+    `users`    INT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (`day`, `event`, `platform`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `exchange_rates` (
+    `base`       CHAR(3)       NOT NULL,
+    `quote`      CHAR(3)       NOT NULL,
+    `rate`       DECIMAL(18,8) NOT NULL,
+    `rate_date`  DATE          NOT NULL,
+    `fetched_at` DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`base`, `quote`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `currency_conversions` (
+    `id`            INT(11)       NOT NULL AUTO_INCREMENT,
+    `user_id`       INT(11)       NOT NULL,
+    `from_currency` CHAR(3)       NOT NULL,
+    `to_currency`   CHAR(3)       NOT NULL,
+    `rate`          DECIMAL(18,8) NOT NULL,
+    `rate_date`     DATE          NOT NULL,
+    `transactions`  INT(11)       NOT NULL DEFAULT 0,
+    `converted_at`  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_user` (`user_id`),
+    CONSTRAINT `currency_conversions_user_fk` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 COMMIT;

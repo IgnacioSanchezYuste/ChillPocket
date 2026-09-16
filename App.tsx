@@ -11,6 +11,7 @@ import { RootNavigator } from './src/navigation/RootNavigator';
 import { usePreferencesStore } from './src/store/usePreferencesStore';
 import { useSecurityStore, LOCK_BACKGROUND_GRACE_MS } from './src/store/useSecurityStore';
 import { initPurchases } from './src/billing/purchases';
+import { initUsageTracking } from './src/utils/analytics';
 
 const Inner: React.FC = () => {
   const { mode } = useTheme();
@@ -25,6 +26,10 @@ const Inner: React.FC = () => {
     // wrapper es no-op si el SDK no está disponible (Expo Go, web, sin API key).
     initPurchases();
   }, [hydratePrefs, hydrateSecurity]);
+
+  // Monitoreo de uso anónimo: cuenta la apertura y envía los contadores en
+  // lotes (segundo plano / arranque), sin una petición por evento.
+  useEffect(() => initUsageTracking(), []);
 
   // Auto-lock cuando la app vuelve a foreground tras > LOCK_BACKGROUND_GRACE_MS.
   useEffect(() => {

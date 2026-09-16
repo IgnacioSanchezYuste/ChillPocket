@@ -48,5 +48,9 @@ yarn-error.*
 # backend: credenciales (solo en el servidor)
 backend/Conexion.php
 
+# backend: logs de la API (solo se versiona su .htaccess)
+backend/logs/*
+!backend/logs/.htaccess
+
 # Claude Code: configuración personal de cada máquina
 .claude/settings.local.json

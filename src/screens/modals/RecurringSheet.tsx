@@ -11,6 +11,8 @@ import { useToast } from '../../components/Toast';
 import { recurringApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { confirmDelete } from '../../utils/confirm';
+import { track } from '../../utils/analytics';
+import { useOnboardingStore } from '../../store/useOnboardingStore';
 import { todayISO } from '../../utils/format';
 import { spacing } from '../../theme/spacing';
 import type { Recurring } from '../../api/types';
@@ -121,6 +123,8 @@ export const RecurringSheet: React.FC<Props> = ({ visible, onClose, editing, onS
           start_date: startDate,
           category_id: categoryId,
         } as any) as { id?: number; recurring?: { id?: number } };
+        // Los recurrentes demo del tutorial no cuentan como uso real.
+        if (!useOnboardingStore.getState().active) track('recurring_created');
         toast.success('Creado');
         // Intentamos extraer el ID del recurrente recién creado.
         // El backend devuelve { success, id } o { success, recurring: { id } }.

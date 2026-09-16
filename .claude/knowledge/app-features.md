@@ -14,7 +14,11 @@
 - **Modelo**: cuenta personal con login email/password o Google OAuth.
 
 ## 2. Acceso, cuenta y seguridad
-- **Registro** con email + contraseña (mínimo 6 caracteres).
+- **Registro** con email + contraseña (mínimo 6 caracteres). Se envía un código para **verificar el email**; la
+  app funciona igual sin verificar, pero **no deja comprar un plan** hasta verificarlo (aviso en Ajustes y en el Paywall).
+- **Recuperar la contraseña** con un código de 6 dígitos por email ("¿Olvidaste tu contraseña?" en el login y en
+  Ajustes → Contraseña). Al terminar, la sesión queda iniciada. Sirve también para que una cuenta de Google ponga
+  contraseña. Aviso por correo en cada cambio de contraseña.
 - **Login con Google** (OAuth: `@react-native-google-signin` en nativo, `expo-auth-session` en web).
   Al primer login crea la cuenta y lanza el onboarding.
 - **Persistencia de sesión**: JWT de 7 días firmado por el backend.
@@ -36,6 +40,7 @@
 - Marca visual si la transacción viene de un recurrente (icono `repeat`) o
   de una contribución a meta (icono `flag`).
 - **Destino** (`scope`): "Saldo del mes" (por defecto) o "Mis ahorros".
+- **Tipo de pago** (solo gastos) en una cuadrícula de 6 opciones, todas a la vista.
 - **Foto del recibo** (solo Plus): una por transacción, desde cámara o galería;
   privada, servida solo por endpoint autenticado.
 - **Swipe** en la lista (nativo): duplicar o eliminar.
@@ -150,6 +155,10 @@ diseñada para no agotar la cuota MySQL de Hostinger).
 - Los datos de ejemplo se borran al terminar; la nómina se conserva como ingreso real.
 - Replay disponible en Ajustes ("Ver tutorial de nuevo").
 
+- En Ajustes → **Ingresos y ahorro** se puede cambiar después: frecuencia, ingreso, día de cobro y objetivo.
+  Cambiar el día de cobro recalcula los meses cerrados y "Mis ahorros" (se avisa antes de guardar).
+- En Inicio, un **distintivo del plan** (Gratis · Mejorar / Plus / Familia / Pro Freelance, con "Early adopter").
+
 ### 6.2 Tema y diseño
 - **Tres modos**: claro / oscuro / automático (sigue al sistema).
 - Paleta pastel premium en claro, sobria en oscuro.
@@ -162,7 +171,10 @@ diseñada para no agotar la cuota MySQL de Hostinger).
   Dashboard. Cambia en caliente al redimensionar sin remontar el navegador.
 
 ### 6.4 Multi-moneda
-- Soporte de EUR, USD, GBP (selección en onboarding + Ajustes).
+- EUR, USD, GBP y MXN (onboarding + Ajustes).
+- **Cambiar la moneda convierte todos los importes** con el cambio del BCE del día (movimientos, gastos fijos,
+  presupuestos, metas, ingreso y objetivo). Se muestra el cambio y un ejemplo antes de confirmar; hasta 5 cambios al día.
+- No hay movimientos en otra moneda: todos los importes están en la moneda de la cuenta.
 - Formateo localizado (`Intl.NumberFormat('es-ES', {style:'currency', currency})`).
 
 ### 6.5 Exportar mis datos
@@ -170,6 +182,11 @@ diseñada para no agotar la cuota MySQL de Hostinger).
   para Excel) o **PDF** (generado en el dispositivo con `expo-print`).
 - En nativo se comparte como archivo; en web se descarga.
 - Solo plan Plus (feature `export`, validada también en el servidor).
+
+### 6.6 Panel de uso (solo administradores)
+- Ajustes → Administración → Panel de uso: usuarios (totales, nuevos, activos, % verificados, planes), pantallas y
+  acciones más usadas, reparto por plataforma y aperturas diarias (7/30/90 días). Estadísticas anónimas y agregadas.
+- Botón "Enviar correo de prueba" para diagnosticar el SMTP en producción.
 
 ## 7. Estado actual del billing
 - Tablas `plans`, `user_entitlements`, `billing_events` (Fase 1).
@@ -182,6 +199,9 @@ diseñada para no agotar la cuota MySQL de Hostinger).
   productos y offering en Google Play y RevenueCat.
 - `PremiumLock` en: exportar, forecast, hábitos, comparativa mensual, métodos de
   pago, patrimonio, calculadora de inversiones y estadísticas avanzadas de ahorro.
+- Cada usuario tiene una fila de plan editable a mano (`plan_id`: 1 Gratis · 2 Plus ·
+  3 Familia · 4 Pro Freelance). La migración §10b arregla `receipt_photos`, que no
+  llegaba a Plus porque el script fallaba en MariaDB.
 - Backend valida límites del plan en POST de presupuestos, metas, recurrentes,
   categorías propias, historial > 3 meses, exportación y recibos
   → 403 `plan_limit_reached` (el front abre el Paywall solo).
@@ -204,9 +224,6 @@ Cualquier paywall debe respetar esta lista (no ofrecer lo que no existe):
 - ❌ **"Backup en la nube"** como diferencial: TODA la app guarda en nuestro
   backend. No es una feature premium, es la base del producto.
 - ❌ **Notificaciones push o locales**: ni recordatorios ni alertas.
-- ❌ **Sincronizar con el servidor el día de cobro y el objetivo de ahorro**
-  (bug): solo se guardan en el dispositivo, así que el servidor usa mes natural
-  y las estadísticas de "Meta de ahorro" salen vacías. Ver §10.8.
 - ❌ **Conexión bancaria automática** (PSD2 / Tink / Plaid).
 - ❌ **Importar extractos** CSV / OFX.
 - ❌ **Etiquetas (tags) libres** en transacciones.
@@ -317,10 +334,10 @@ forman parte del paquete **Plus** (feature `advanced_analytics`).
 - `users.savings_goal_monthly DECIMAL(10,2) NULL` — objetivo de ahorro mensual.
 - Los recurrentes de ingreso siguen siendo la fuente real para `expandRecurringTransactions`
   y el calendario de cobros.
-- ⚠️ **Estado real (2026-09-16)**: las columnas existen, pero **ningún endpoint las
-  escribe** (`PUT /me` no las acepta y el onboarding solo las guarda en
-  `usePreferencesStore`). Mientras no se arregle, el servidor calcula periodos con
-  mes natural y `savings_goal_stats.goal` llega siempre `null`.
+- Se guardan con `PUT /me` desde el tutorial y desde Ajustes → Ingresos y ahorro. Los
+  usuarios que hicieron el tutorial antes del arreglo (2026-09-16) los suben solos al
+  abrir la app (`useFinancialProfileSync`). Solo el cobro **mensual** define el periodo;
+  con cobro semanal o variable el saldo va por meses naturales.
 
 ## 11. Onboarding rediseñado (implementado en la Fase 1 de DualBalance)
 

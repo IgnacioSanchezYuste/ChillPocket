@@ -25,6 +25,7 @@ import {
   restorePurchases,
 } from '../../billing/purchases';
 import type { PlanCode } from '../../api/types';
+import { VerifyEmailSheet } from '../modals/VerifyEmailSheet';
 
 type PaidPlan = Exclude<PlanCode, 'free'>;
 
@@ -119,6 +120,8 @@ export const PaywallScreen: React.FC = () => {
   const toast = useToast();
   const billing = useBilling();
   const refreshUser = useAuthStore((s) => s.refreshUser);
+  // Mejorar de plan exige el email verificado (el resto de la app no).
+  const [verifyFor, setVerifyFor] = useState<PaidPlan | null>(null);
   const [cycle, setCycle] = useState<Cycle>('annual');
   const [pkgs, setPkgs] = useState<Record<string, RCPackage>>({});
   const [purchasing, setPurchasing] = useState<string | null>(null);
@@ -168,6 +171,11 @@ export const PaywallScreen: React.FC = () => {
 
   const onSubscribe = async (planCode: PaidPlan) => {
     track('upgrade_clicked', { plan: planCode, cycle });
+    // Estado actual (no el del render): tras verificar se reintenta desde un callback.
+    if (useAuthStore.getState().user?.email_verified === false) {
+      setVerifyFor(planCode);
+      return;
+    }
     if (!purchasesAvailable()) {
       toast.show(
         'Las compras estarán disponibles muy pronto. Estamos terminando la configuración con Google.',
@@ -205,7 +213,8 @@ export const PaywallScreen: React.FC = () => {
       ) {
         // silencio: el usuario canceló
       } else {
-        track('purchase_failed', { plan: planCode, cycle, error: msg.slice(0, 200) });
+        // Solo el plan: el mensaje de error nunca va a la analítica.
+        track('purchase_failed', { plan: planCode, cycle });
         // En __DEV__ mostramos el mensaje real para acelerar la depuración.
         // En producción dejamos el mensaje genérico (no filtrar internos del SDK).
         toast.error(
@@ -305,6 +314,17 @@ export const PaywallScreen: React.FC = () => {
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      <VerifyEmailSheet
+        visible={verifyFor !== null}
+        onClose={() => setVerifyFor(null)}
+        reason="Para mejorar tu plan necesitamos confirmar que el email es tuyo. Así podrás recuperar tu cuenta y tus compras."
+        onVerified={() => {
+          const plan = verifyFor;
+          // Continúa con la compra cuando el Modal ya se ha cerrado.
+          if (plan) setTimeout(() => onSubscribe(plan), 400);
+        }}
+      />
     </View>
   );
 };

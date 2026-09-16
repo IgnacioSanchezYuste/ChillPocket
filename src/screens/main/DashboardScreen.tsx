@@ -15,7 +15,7 @@ import { useDataStore } from '../../store/useDataStore';
 import { useAuthStore } from '../../store/useAuthStore';
 import { usePreferencesStore } from '../../store/usePreferencesStore';
 import { useTheme } from '../../theme/ThemeProvider';
-import { filterByBalanceMode } from '../../utils/balanceMode';
+import { filterByBalanceMode, monthBalanceFigures } from '../../utils/balanceMode';
 import { spacing, radius } from '../../theme/spacing';
 import { useContentWidth, useBreakpoint } from '../../theme/layout';
 import { Text } from '../../components/Text';
@@ -24,6 +24,7 @@ import { KPICard } from '../../components/KPICard';
 import { BalanceHero } from '../../components/BalanceHero';
 import { InsightBanner } from '../../components/InsightBanner';
 import { BrandLogo } from '../../components/BrandLogo';
+import { PlanBadge } from '../../components/PlanBadge';
 import { SwipeableTransactionRow } from '../../components/SwipeableTransactionRow';
 import { FAB } from '../../components/FAB';
 import { SkeletonTransactionRow } from '../../components/Skeleton';
@@ -34,6 +35,7 @@ import { transactionsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { useToast } from '../../components/Toast';
 import { confirm } from '../../utils/confirm';
+import { track } from '../../utils/analytics';
 import type { Transaction } from '../../api/types';
 import type { TransactionPrefill } from '../modals/TransactionSheet';
 
@@ -86,8 +88,12 @@ export const DashboardScreen: React.FC = () => {
   );
   const recent = visibleTxs.slice(0, 5);
   const selectedMonth = summary?.month_year || analyticsMonth || currentMonthYear();
+  const monthFigures = monthBalanceFigures(summary, selectedMonth === currentMonthYear());
   const handleModeChange = useCallback(
     (m: 'month' | 'historical') => {
+      if (m === 'historical' && useDataStore.getState().balanceMode !== 'historical') {
+        track('balance_mode', 'historical');
+      }
       setBalanceMode(m);
       // Cualquier interacción con la card descarta la pista.
       if (!seenSwipeHint) setSeenSwipeHint(true);
@@ -144,6 +150,7 @@ export const DashboardScreen: React.FC = () => {
     if (!ok) return;
     try {
       await transactionsApi.remove(id);
+      track('transaction_deleted');
       await refreshAll(true);
       toast.success('Eliminado');
     } catch (e) {
@@ -181,21 +188,9 @@ export const DashboardScreen: React.FC = () => {
          <View style={[columnStyle, { gap: spacing.md }]}>
           {/* Header */}
           <View style={styles.header}>
-            <View style={{ flex: 1 }}>
-              <Text variant="h1" style={{ fontSize: 26 }}>
-                Hola, {user?.name?.split(' ')[0] || ''} 👋
-              </Text>
-              <Pressable
-                onPress={() => setMonthPickerOpen(true)}
-                hitSlop={8}
-                style={[styles.monthPill, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}
-              >
-                <Text variant="label" tone="secondary" weight="medium" style={{ textTransform: 'capitalize' }}>
-                  {monthLabel(selectedMonth)}
-                </Text>
-                <Ionicons name="chevron-down" size={14} color={palette.textSecondary} />
-              </Pressable>
-            </View>
+            <Text variant="h1" style={{ fontSize: 26, flex: 1 }}>
+              Hola, {user?.name?.split(' ')[0] || ''} 👋
+            </Text>
             <Pressable
               onPress={() => navigation.navigate('Settings')}
               style={[
@@ -209,16 +204,31 @@ export const DashboardScreen: React.FC = () => {
             </Pressable>
           </View>
 
+          {/* Mes seleccionado + plan del usuario */}
+          <View style={styles.headerMeta}>
+            <Pressable
+              onPress={() => setMonthPickerOpen(true)}
+              hitSlop={8}
+              style={[styles.monthPill, { backgroundColor: palette.bgSurface, borderColor: palette.borderSubtle }]}
+            >
+              <Text variant="label" tone="secondary" weight="medium" style={{ textTransform: 'capitalize' }}>
+                {monthLabel(selectedMonth)}
+              </Text>
+              <Ionicons name="chevron-down" size={14} color={palette.textSecondary} />
+            </Pressable>
+            <PlanBadge />
+          </View>
+
           {/* Hero saldo (modo dual: Saldo del mes ⇄ Mis ahorros) */}
           <View style={{ paddingHorizontal: spacing.lg }}>
             <BalanceHero
               mode={balanceMode}
               onModeChange={handleModeChange}
               currency={currency}
-              balance={summary?.balance ?? 0}
-              income={summary?.total_income ?? 0}
-              expense={summary?.total_expense ?? 0}
-              savingsRatio={summary?.savings_ratio ?? 0}
+              balance={monthFigures.balance}
+              income={monthFigures.income}
+              expense={monthFigures.expense}
+              savingsRatio={monthFigures.savingsRatio}
               savedThisMonth={summary?.saved_this_month ?? 0}
               historicalAmount={summary?.net_total_historical ?? 0}
               avgMonthlyExpense={projection?.avg_monthly_expense}
@@ -388,6 +398,7 @@ export const DashboardScreen: React.FC = () => {
       <FAB
         onPress={() => {
           setEditing(null);
+          setDuplicatePrefill(null);
           setSheetOpen(true);
         }}
       />
@@ -403,7 +414,11 @@ export const DashboardScreen: React.FC = () => {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         editing={editing}
-        onSaved={() => refreshAll()}
+        prefill={duplicatePrefill}
+        onSaved={(created) => {
+          if (created && duplicatePrefill) track('transaction_duplicated');
+          refreshAll();
+        }}
       />
     </View>
   );
@@ -414,17 +429,23 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
+  },
+  headerMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    paddingHorizontal: spacing.lg,
+    gap: spacing.sm,
   },
   monthPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
     alignSelf: 'flex-start',
-    marginTop: 6,
     paddingHorizontal: spacing.md,
     paddingVertical: 5,
     borderRadius: radius.pill,

@@ -22,14 +22,15 @@ Recopilamos solo la informacion necesaria para prestar el servicio:
    - Fechas y descripciones de movimientos.
 
 3. **Datos tecnicos basicos**
-   - IP, navegador/sistema, y registros tecnicos minimos necesarios para seguridad, diagnostico y operacion.
+   - IP, navegador/sistema, y registros tecnicos minimos necesarios para seguridad, diagnostico y operacion. En los registros la IP se guarda recortada (sin su ultimo bloque) y los emails, enmascarados.
+   - Estadisticas de uso anonimas y agregadas: cuantas veces se abren las pantallas y se usan las funciones, por dia y plataforma. No se asocian a tu cuenta ni a tu dispositivo.
 
 4. **Datos de soporte**
    - Mensajes que nos envias y su contenido.
 
 ## 2. Datos que no recopilamos
 - No usamos publicidad personalizada.
-- No usamos analitica de terceros.
+- No usamos analitica de terceros: las estadisticas de uso se calculan en nuestro propio servidor.
 - No vendemos datos personales.
 
 ## 3. Fuentes de datos
@@ -42,14 +43,17 @@ Tratamos tus datos para:
 
 1. **Prestar el servicio** (ejecucion del contrato): crear cuenta, guardar movimientos, mostrar analitica.
 2. **Seguridad y prevencion de abuso** (interes legitimo): proteger cuentas y evitar fraude.
-3. **Soporte** (interes legitimo o consentimiento): responder consultas.
-4. **Cumplimiento legal** (obligacion legal): responder a requerimientos legales.
+3. **Mejorar la app** (interes legitimo): saber que partes se usan mas mediante estadisticas anonimas y agregadas.
+4. **Soporte** (interes legitimo o consentimiento): responder consultas.
+5. **Cumplimiento legal** (obligacion legal): responder a requerimientos legales.
 
 ## 5. Comparticion de datos
 Solo compartimos datos cuando es imprescindible:
 
 - **Alojamiento e infraestructura**: proveedores de hosting para operar la app y la base de datos.
 - **Google**: si usas inicio de sesion con Google, Google procesa tu informacion segun su politica.
+- **Correo electronico**: los codigos de verificacion y de cambio de contrasena se envian con el servidor de correo de nuestro proveedor de alojamiento.
+- **Tipos de cambio**: para cambiar la moneda consultamos los tipos publicos del Banco Central Europeo (frankfurter.dev). No se envia ningun dato tuyo.
 
 No compartimos datos con terceros para fines publicitarios ni los vendemos.
 
@@ -61,7 +65,8 @@ Clausulas Contractuales Tipo) para proteger tu informacion conforme al RGPD.
 - **Cuenta activa**: conservamos los datos mientras tu cuenta exista.
 - **Borrado de cuenta**: eliminamos o anonimizamos datos en un plazo razonable tras tu solicitud.
 - **Backups**: pueden mantenerse por ciclos limitados antes de su purga automatica.
-- **Logs tecnicos**: se retienen el tiempo necesario para seguridad y diagnostico.
+- **Logs tecnicos**: se guardan en ficheros semanales y se borran automaticamente pasadas unas 12 semanas.
+- **Estadisticas de uso**: al ser anonimas y agregadas, pueden conservarse sin limite.
 
 ## 8. Derechos del usuario (RGPD)
 Puedes ejercer los siguientes derechos:

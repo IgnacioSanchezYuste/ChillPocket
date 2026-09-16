@@ -39,7 +39,11 @@ Los hooks no sustituyen al criterio: ejecuta `npm run check` antes de dar algo p
 - Toda lógica de negocio **pura** va en `src/utils/` (sin imports de React Native) y lleva test.
   Ejemplos: `financialPeriod.ts`, `balanceMode.ts`, `validators.ts`.
 - Si arreglas un bug de cálculo, añade primero el test que lo reproduce.
-- Backend: no hay tests automáticos; `php -l` (PHP de XAMPP en `C:\xampp\php`) y revisión cuidadosa.
+- Backend: no hay tests automáticos en el repo; `php -l` (PHP de XAMPP en `C:\xampp\php`, sin `php.ini`: para
+  extensiones usa uno propio con `PHPRC`). Para probar de verdad: MariaDB de XAMPP aislada en el scratchpad +
+  `composer require slim/slim slim/psr7 firebase/php-jwt` + `php -S` con un `Conexion.php` de pruebas.
+- Web: `npx expo start --web` (sin `CI=1`, que desactiva la recarga de ficheros) y Chrome (extensión o
+  `puppeteer-core` con el Chrome instalado) para recorridos de UI.
 
 ## Estilo de código
 - TypeScript estricto, componentes funcionales con hooks, estado global con zustand. Evita `any` salvo en libs sin tipos.
@@ -49,10 +53,20 @@ Los hooks no sustituyen al criterio: ejecuta `npm run check` antes de dar algo p
 - **Secreto JWT**: `index.php` lo lee de `getenv('JWT_SECRET')` → `Conexion::JWT_SECRET_CONFIG` → constante global.
   Si falta, el backend aborta (fail-closed).
 
+## Logs y diagnóstico
+- Backend: `AppLog::info|warning|error(canal, mensaje, contexto)` (`backend/Logger.php`). Nada de secretos, tokens,
+  códigos ni cuerpos; emails con `AppLog::maskEmail`. `error_log()` también acaba en `backend/logs/`.
+- Ojo con PHP: `"$var→"` toma `→` como parte del nombre de la variable (bytes UTF-8). Usa `"{$var}→"`.
+- Monitoreo: `track(evento, dimensión?)` en el cliente; solo nombres de baja cardinalidad, nunca importes ni textos.
+
 ## Despliegue (manual)
-- Backend: subir `backend/index.php` (+ `.htaccess` si cambia) por FTP; SQL de `backend/update.sql` por phpMyAdmin
-  **antes** de subir el PHP que lo necesita.
-- App: rebuild EAS solo si cambian módulos nativos, plugins de `app.json` o variables `EXPO_PUBLIC_*`.
+- Backend: subir por FTP los PHP de `backend/` que hayan cambiado (`index.php`, `Logger.php`, `Mailer.php`,
+  `.htaccess`, `logs/.htaccess`); SQL de
+  `backend/update.sql` por phpMyAdmin **antes** de subir el PHP que lo necesita. El script entero es re-ejecutable.
+- Las migraciones se prueban antes en la MariaDB de XAMPP (instancia aislada en el scratchpad): producción es MariaDB 11.8.
+- App: rebuild EAS solo si cambian módulos nativos, plugins de `app.json` o variables `EXPO_PUBLIC_*`. Un módulo
+  nativo nuevo solo llega al móvil con un build nuevo: cárgalo de forma protegida (patrón de `biometric.ts` o
+  `receiptPicker.native.ts`) y muestra `MISSING_NATIVE_MESSAGE` si falta (`src/utils/nativeModules.ts`).
 - Comandos listos para copiar: `comandos.txt` en la raíz.
 
 ## Definition of Done

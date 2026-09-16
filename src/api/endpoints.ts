@@ -17,6 +17,12 @@ import type {
   Transaction,
   TrendPoint,
   User,
+  ExchangeRate,
+  CurrencyConversionResult,
+  SupportedCurrency,
+  UsageBatch,
+  UsageReport,
+  MailTestResult,
 } from './types';
 
 // -------- AUTH --------
@@ -26,10 +32,28 @@ export const authApi = {
   login: (data: { email: string; password: string }) =>
     http.post<AuthResponse>('/auth/login', data).then((r) => r.data),
   me: () => http.get<{ user: User }>('/me').then((r) => r.data.user),
-  updateMe: (data: Partial<Pick<User, 'name' | 'currency' | 'timezone' | 'theme' | 'avatar_url'>>) =>
-    http.put<{ success: true; user: User }>('/me', data).then((r) => r.data.user),
+  updateMe: (
+    data: Partial<
+      Pick<
+        User,
+        'name' | 'currency' | 'timezone' | 'theme' | 'avatar_url' | 'income_reference' | 'income_payday' | 'savings_goal_monthly'
+      >
+    >,
+  ) => http.put<{ success: true; user: User }>('/me', data).then((r) => r.data.user),
   changePassword: (current_password: string, new_password: string) =>
     http.put('/me/password', { current_password, new_password }).then((r) => r.data),
+  /** Envía un código de 6 dígitos al email. Responde igual exista o no la cuenta. */
+  forgotPassword: (email: string) =>
+    http.post<{ success: true; message: string }>('/auth/password/forgot', { email }).then((r) => r.data),
+  /** Cambia la contraseña con el código recibido y devuelve una sesión nueva. */
+  resetPassword: (data: { email: string; code: string; new_password: string }) =>
+    http.post<AuthResponse>('/auth/password/reset', data).then((r) => r.data),
+  sendEmailVerification: () =>
+    http
+      .post<{ success: true; already_verified?: boolean }>('/me/email/send-verification')
+      .then((r) => r.data),
+  verifyEmail: (code: string) =>
+    http.post<{ success: true; user: User }>('/me/email/verify', { code }).then((r) => r.data.user),
   /** Intercambia un id_token de Google por nuestro JWT + user. */
   google: (id_token: string) =>
     http.post<AuthResponse>('/auth/google', { id_token }).then((r) => r.data),
@@ -243,4 +267,30 @@ export const analyticsApi = {
       .get<{ trends: TrendPoint[] }>('/analytics/trends', { params: { days } })
       .then((r) => r.data.trends),
   projection: () => http.get<Projection>('/analytics/projection').then((r) => r.data),
+};
+
+// -------- DIVISAS --------
+export const currencyApi = {
+  /** Cambio actual (BCE, cacheado en el servidor) de la moneda del usuario a `to`. */
+  rate: (to: SupportedCurrency) =>
+    http.get<ExchangeRate>('/currency/rate', { params: { to } }).then((r) => r.data),
+  /**
+   * Cambia la moneda de la cuenta convirtiendo TODOS los importes con `rate`.
+   * Si el cambio del servidor ya no es ese, responde 409 `{ code: 'rate_changed', rate }`.
+   */
+  convert: (currency: SupportedCurrency, rate: number) =>
+    http.post<CurrencyConversionResult>('/me/currency', { currency, rate }).then((r) => r.data),
+};
+
+// -------- USO (monitoreo) --------
+export const usageApi = {
+  send: (batch: UsageBatch) => http.post<{ success: true }>('/usage', batch).then((r) => r.data),
+};
+
+// -------- ADMINISTRACIÓN (solo is_admin) --------
+export const adminApi = {
+  usage: (days: 7 | 30 | 90 = 30) =>
+    http.get<UsageReport>('/admin/usage', { params: { days } }).then((r) => r.data),
+  /** Envía un correo de prueba al administrador y devuelve el error SMTP si falla. */
+  mailTest: () => http.post<MailTestResult>('/admin/mail-test', {}).then((r) => r.data),
 };
