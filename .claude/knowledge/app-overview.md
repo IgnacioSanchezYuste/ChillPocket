@@ -22,7 +22,7 @@ funcionalidad propia).
 - **Backend**: PHP + **Slim 4** en un único fichero (`backend/index.php`), PDO sobre MySQL/MariaDB, JWT
   (`firebase/php-jwt`, 7 días). CORS y rewrite en `backend/.htaccess`.
   - Hosting **Hostinger** compartido → límite duro de **500 conexiones MySQL/hora**.
-- **DB**: MariaDB 10.3+. Esquema base `backend/u204231532_Finanzas.sql` (desactualizado) + migraciones
+- **DB**: MariaDB (producción: **11.8**; XAMPP local: 10.4). Esquema base `backend/u204231532_Finanzas.sql` (desactualizado) + migraciones
   idempotentes en `backend/update.sql`.
 - **Tests**: Jest (`jest-expo`) sobre la lógica pura de `src/utils/`.
 
@@ -33,19 +33,22 @@ src/
   api/               http.ts (axios + JWT + 401/403), endpoints.ts (contratos), types.ts, googleConfig.ts
   billing/           purchases.ts (RevenueCat)
   components/        design system + componentes de datos (algunos con variante .web/.native)
-  hooks/             useCountUp, useGoogleAuth
+  hooks/             useCountUp, useGoogleAuth, useCooldown, useFinancialProfileSync
   navigation/        RootNavigator (auth + lock), AppNavigator (tabs + stack + hub "Más"), AuthNavigator
   onboarding/        OnboardingHost, SpotlightOverlay, useSpotlightTarget
-  screens/           auth/ (Login, Register, Lock) · main/ (12 pantallas) · modals/ (4 sheets)
+  screens/           auth/ (Login, Register, ForgotPassword, Lock) · main/ (12 pantallas) · modals/ (7 sheets)
   store/             useAuth, useData, usePreferences, useOnboarding, useSecurity, useBilling
   theme/             colors, spacing, layout (responsive), ThemeProvider
   utils/             lógica pura con tests en __tests__/ + helpers de plataforma
 backend/
   index.php          TODA la API
   .htaccess          CORS + rewrite
-  update.sql         migraciones idempotentes (§5–§10)
+  update.sql         migraciones idempotentes (§5–§13), re-ejecutable entero
   Images/.htaccess   bloquea el acceso directo a los recibos subidos
-  Conexion.php       credenciales PDO y secretos — SOLO en el servidor, nunca en el repo
+  Logger.php         appConfig() + logs en ficheros (backend/logs/, semanales)
+  Mailer.php         cliente SMTP propio (correos de verificación y recuperación)
+  logs/              logs de la API (solo se versiona su .htaccess)
+  Conexion.php       credenciales PDO, JWT y SMTP — SOLO en el servidor, nunca en el repo (está en .gitignore)
 docs/                privacy-policy.html, screenshots
 .claude/             sistema de agentes (ver .claude/README.md)
 comandos.txt         comandos de ejecución, build y despliegue listos para copiar
@@ -56,12 +59,14 @@ Todos los comandos están en `comandos.txt`. Los esenciales:
 - `npx expo start -c --dev-client` (móvil con dev build) · `npx expo start -c --web` (web).
 - `npm run check` = `tsc --noEmit` + Jest.
 - Build: `eas build -p android --profile preview` (APK) / `--profile production` (AAB).
-- Backend: FTP de `index.php` (+ `.htaccess`) y SQL por phpMyAdmin.
+- Backend: SQL por phpMyAdmin y después FTP de los PHP cambiados (`index.php`, `Mailer.php`, `.htaccess`).
 
 ## Variables de entorno (frontend, prefijo `EXPO_PUBLIC_`)
 `EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`, `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`,
 `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY`. En local vienen de `.env` (no versionado; claves en `.env.example`);
-en EAS, de `eas.json` por perfil. Backend: `JWT_SECRET`, `REVENUECAT_WEBHOOK_AUTH`, credenciales PDO en `Conexion.php`.
+en EAS, de `eas.json` por perfil. Backend (en `Conexion.php` o variables de entorno): credenciales PDO, `JWT_SECRET`,
+`REVENUECAT_WEBHOOK_AUTH`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_FROM_NAME`,
+`ADMIN_EMAILS` y, opcionales, `LOG_ROTATION`, `LOG_KEEP`, `LOG_LEVEL`, `LOG_TIMEZONE`.
 
 ## Restricciones que condicionan todo
 1. **500 conexiones MySQL/hora** → `GET /analytics/all` (1 petición en vez de 7), throttle de 30 s en el store,
@@ -74,7 +79,9 @@ en EAS, de `eas.json` por perfil. Backend: `JWT_SECRET`, `REVENUECAT_WEBHOOK_AUT
   `user` (`plan_code, limits, features, is_premium…`); el front los lee con `useBilling()`.
 - **Gating real** en el servidor: límites de creación, historial > 3 meses, exportación y recibos
   (403 `plan_limit_reached` → Paywall). En la UI, `PremiumLock` en las secciones avanzadas.
-- Early adopters: Plus gratis de por vida (`source='early_adopter'`).
+- Early adopters: Plus gratis de por vida (`source='early_adopter'`). El resto recibe al registrarse una fila base
+  gratis (`source='manual'`); para cambiar un plan a mano se edita su `plan_id` (1 Gratis · 2 Plus · 3 Familia · 4 Pro).
+- Comprar un plan exige el email verificado (código por correo). El resto de la app no lo exige.
 - RevenueCat conectado (SDK + webhook). Pendiente: productos y offering en Play/RevenueCat.
 
 ## Identidad

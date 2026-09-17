@@ -19,14 +19,18 @@ import { Text } from '../../components/Text';
 import { ProgressBar } from '../../components/ProgressBar';
 import { AuthImage } from '../../components/AuthImage';
 import { PremiumLock } from '../../components/PremiumLock';
+import { useOnboardingStore } from '../../store/useOnboardingStore';
+import { isMissingNativeModule, MISSING_NATIVE_MESSAGE } from '../../utils/nativeModules';
 import { useDataStore } from '../../store/useDataStore';
 import { usePreferencesStore } from '../../store/usePreferencesStore';
 import { useBilling } from '../../store/useBillingStore';
 import { useToast } from '../../components/Toast';
-import { transactionsApi } from '../../api/endpoints';
+import { savingsApi, transactionsApi, type TransferDirection } from '../../api/endpoints';
+import { useAuthStore } from '../../store/useAuthStore';
 import { apiError } from '../../api/http';
 import { confirmDelete } from '../../utils/confirm';
-import { todayISO } from '../../utils/format';
+import { track } from '../../utils/analytics';
+import { formatMoney, todayISO } from '../../utils/format';
 import { spacing, radius } from '../../theme/spacing';
 import { useTheme } from '../../theme/ThemeProvider';
 import { PAYMENT_METHODS } from '../../utils/paymentMethods';
@@ -55,8 +59,6 @@ export type TransactionPrefill = {
   notes?: string | null;
   /** Fecha ISO YYYY-MM-DD. Si se omite, se usa hoy. Usado al duplicar. */
   date?: string;
-  /** Scope del modelo dual. Si se omite, se usa 'month'. */
-  scope?: 'month' | 'historical';
 };
 
 type Props = {
@@ -106,7 +108,8 @@ export const TransactionSheet: React.FC<Props> = ({
   onSaved,
   prefill,
 }) => {
-  const { categories, fetchCategories, refreshAll } = useDataStore();
+  const { categories, fetchCategories, refreshAll, summary } = useDataStore();
+  const currency = useAuthStore((s) => s.user?.currency || 'EUR');
   const { lastCategoryId, lastPaymentMethod, setLastCategory, setLastPaymentMethod } =
     usePreferencesStore();
   const toast = useToast();
@@ -114,6 +117,7 @@ export const TransactionSheet: React.FC<Props> = ({
   const navigation = useNavigation<any>();
   const { hasFeature } = useBilling();
   const hasReceipts = hasFeature('receipt_photos');
+  const onboardingActive = useOnboardingStore((s) => s.active);
 
   // --- Form state ---
   const [type, setType] = useState<'expense' | 'income'>('expense');
@@ -123,7 +127,10 @@ export const TransactionSheet: React.FC<Props> = ({
   const [date, setDate] = useState(todayISO());
   const [notes, setNotes] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null);
-  const [scope, setScope] = useState<'month' | 'historical'>('month');
+  // Transferencia entre "Saldo del mes" y "Mis ahorros" (única forma de mover dinero a ahorro).
+  const [transferMode, setTransferMode] = useState(false);
+  const [transferDir, setTransferDir] = useState<TransferDirection>('to_savings');
+  const [transferError, setTransferError] = useState('');
   const [saving, setSaving] = useState(false);
 
   // --- Receipt state ---
@@ -156,6 +163,9 @@ export const TransactionSheet: React.FC<Props> = ({
       revokeLocalAsset(localAssetRef.current);
       localAssetRef.current = null;
       setRemoveServerReceipt(false);
+      setTransferMode(false);
+      setTransferDir('to_savings');
+      setTransferError('');
 
       if (editing) {
         setType(editing.type);
@@ -165,7 +175,6 @@ export const TransactionSheet: React.FC<Props> = ({
         setDate(editing.transaction_date);
         setNotes(editing.notes || '');
         setPaymentMethod(editing.payment_method ?? null);
-        setScope(editing.scope ?? 'month');
         // Inicializar el bloque de foto según si ya tiene recibo
         setReceiptState(editing.receipt_path ? { phase: 'server' } : { phase: 'idle' });
       } else if (prefill) {
@@ -177,7 +186,6 @@ export const TransactionSheet: React.FC<Props> = ({
         setDate(prefill.date ?? todayISO());
         setNotes(prefill.notes ?? '');
         setPaymentMethod(prefill.paymentMethod ?? null);
-        setScope(prefill.scope ?? 'month');
         setReceiptState({ phase: 'idle' });
       } else {
         const initialType: 'expense' | 'income' = 'expense';
@@ -188,7 +196,6 @@ export const TransactionSheet: React.FC<Props> = ({
         setDate(todayISO());
         setNotes('');
         setPaymentMethod(lastPaymentMethod);
-        setScope('month');
         setReceiptState({ phase: 'idle' });
       }
     }
@@ -224,11 +231,16 @@ export const TransactionSheet: React.FC<Props> = ({
 
   const filtered = useMemo(() => categories.filter((c) => c.type === type), [categories, type]);
   const generatedFromRecurring = !!editing?.recurring_id;
-  const scopeLocked = !!editing?.goal_id;
+  const isTransfer = !!editing?.transfer;
 
   // Colores dinámicos según tipo: danger para gastos, success para ingresos
-  const typeAccent = type === 'expense' ? palette.danger : palette.success;
-  const typeAccentSoft = type === 'expense' ? palette.dangerSoft : palette.successSoft;
+  const typeAccent = transferMode ? palette.accent : type === 'expense' ? palette.danger : palette.success;
+  const typeAccentSoft = transferMode ? palette.accentSoft : type === 'expense' ? palette.dangerSoft : palette.successSoft;
+  const expenseActive = !transferMode && type === 'expense';
+  const incomeActive = !transferMode && type === 'income';
+  const transferAvailable = Number(
+    (transferDir === 'to_savings' ? summary?.period_balance : summary?.net_total_historical) ?? 0,
+  );
 
   // ---------------------------------------------------------------------------
   // Receipt actions
@@ -254,8 +266,8 @@ export const TransactionSheet: React.FC<Props> = ({
       // Si había un recibo de servidor y el usuario elige uno nuevo,
       // marcamos que hay que reemplazar (deleteReceipt + upload)
       setRemoveServerReceipt(false);
-    } catch {
-      toast.error('No se pudo abrir la galería');
+    } catch (e) {
+      toast.error(isMissingNativeModule(e) ? MISSING_NATIVE_MESSAGE : 'No se pudo abrir la galería');
     }
   }, [receiptState, toast]);
 
@@ -276,8 +288,8 @@ export const TransactionSheet: React.FC<Props> = ({
       }
       setReceiptState({ phase: 'local', asset });
       setRemoveServerReceipt(false);
-    } catch {
-      toast.error('No se pudo abrir la cámara');
+    } catch (e) {
+      toast.error(isMissingNativeModule(e) ? MISSING_NATIVE_MESSAGE : 'No se pudo abrir la cámara');
     }
   }, [receiptState, toast]);
 
@@ -302,6 +314,7 @@ export const TransactionSheet: React.FC<Props> = ({
       try {
         const form = buildReceiptFormData(asset);
         await transactionsApi.uploadReceipt(txId, form);
+        track('receipt_uploaded');
         revokeLocalAsset(asset);
         localAssetRef.current = null;
         setReceiptState({ phase: 'server' });
@@ -322,7 +335,27 @@ export const TransactionSheet: React.FC<Props> = ({
 
   const onSave = async () => {
     const amt = parseFloat(amount.replace(',', '.'));
-    if (!Number.isFinite(amt) || amt <= 0) return toast.error('El importe debe ser mayor que 0');
+    if (!Number.isFinite(amt) || amt <= 0) {
+      if (transferMode) return setTransferError('El importe debe ser mayor que 0');
+      return toast.error('El importe debe ser mayor que 0');
+    }
+    if (transferMode) {
+      setTransferError('');
+      setSaving(true);
+      try {
+        await savingsApi.transfer(amt, transferDir);
+        track('savings_transfer', transferDir);
+        toast.success(transferDir === 'to_savings' ? 'Enviado a Mis ahorros' : 'Pasado al saldo del mes');
+        await refreshAll(true);
+        onSaved?.(null);
+        onClose();
+      } catch (e) {
+        setTransferError(apiError(e, 'No se pudo transferir'));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (!description.trim()) return toast.error('Añade una descripción');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return toast.error('Fecha YYYY-MM-DD');
 
@@ -330,7 +363,6 @@ export const TransactionSheet: React.FC<Props> = ({
     try {
       if (editing) {
         // Edición: primero actualizar la tx
-        const scopeChanged = !scopeLocked && (editing.scope ?? 'month') !== scope;
         await transactionsApi.update(editing.id, {
           amount: amt,
           description: description.trim(),
@@ -339,8 +371,8 @@ export const TransactionSheet: React.FC<Props> = ({
           category_id: categoryId,
           payment_method: paymentMethod,
           notes: notes.trim() || null,
-          ...(scopeChanged ? { scope } : {}),
         });
+        track('transaction_updated');
 
         // Luego gestionar el recibo
         if (removeServerReceipt && receiptState.phase === 'idle') {
@@ -370,8 +402,9 @@ export const TransactionSheet: React.FC<Props> = ({
           category_id: categoryId,
           payment_method: paymentMethod,
           notes: notes.trim() || null,
-          scope,
         });
+        // Los movimientos demo del tutorial no cuentan como uso real.
+        if (!onboardingActive) track('transaction_created', type);
 
         // Persistir últimas elecciones
         setLastCategory(type, categoryId);
@@ -402,6 +435,7 @@ export const TransactionSheet: React.FC<Props> = ({
     setSaving(true);
     try {
       await transactionsApi.remove(editing.id);
+      track('transaction_deleted');
       toast.success('Eliminada');
       await refreshAll(true);
       onSaved?.(null);
@@ -418,8 +452,9 @@ export const TransactionSheet: React.FC<Props> = ({
   // ---------------------------------------------------------------------------
 
   const ReceiptBlock = () => {
-    // Free: teaser con candado
+    // Free: teaser con candado (no durante el tutorial: "Ver Plus" lo interrumpiría)
     if (!hasReceipts) {
+      if (onboardingActive) return null;
       return (
         <View style={{ gap: spacing.xs }}>
           <Text variant="label" tone="secondary">Foto del ticket</Text>
@@ -428,6 +463,7 @@ export const TransactionSheet: React.FC<Props> = ({
             planLabel="Ver Plus"
             variant="banner"
             feature="receipt_photos"
+            onNavigate={onClose}
           />
         </View>
       );
@@ -616,15 +652,17 @@ export const TransactionSheet: React.FC<Props> = ({
     <Sheet
       visible={visible}
       onClose={onClose}
-      title={editing ? 'Editar transacción' : 'Nueva transacción'}
+      title={isTransfer ? 'Transferencia' : editing ? 'Editar transacción' : transferMode ? 'Transferir' : 'Nueva transacción'}
       footer={
         <View style={{ gap: spacing.sm }}>
-          <Button
-            title={editing ? 'Guardar cambios' : 'Crear transacción'}
-            onPress={onSave}
-            loading={saving}
-            size="lg"
-          />
+          {!isTransfer && (
+            <Button
+              title={editing ? 'Guardar cambios' : transferMode ? 'Transferir' : 'Crear transacción'}
+              onPress={onSave}
+              loading={saving}
+              size="lg"
+            />
+          )}
           {editing && <Button title="Eliminar" variant="ghost" onPress={onDelete} />}
         </View>
       }
@@ -644,7 +682,19 @@ export const TransactionSheet: React.FC<Props> = ({
         </View>
       )}
 
-      {/* Toggle gasto / ingreso — tiñe el acento dinámicamente */}
+      {isTransfer && editing && (
+        <View style={[styles.infoBanner, { backgroundColor: palette.accentSoft, borderColor: palette.accent }]}>
+          <Ionicons name="swap-horizontal" size={16} color={palette.accent} />
+          <Text variant="caption" tone="accent" style={{ flex: 1 }}>
+            {editing.type === 'expense' ? 'Transferencia a Mis ahorros' : 'Retirada de Mis ahorros'} de{' '}
+            {formatMoney(Number(editing.amount), currency)} ({editing.transaction_date}). Una transferencia no se
+            edita: elimínala y haz otra.
+          </Text>
+        </View>
+      )}
+
+      {/* Toggle gasto / ingreso / ahorro — tiñe el acento dinámicamente */}
+      {!isTransfer && (
       <View
         style={[
           styles.typeToggleWrap,
@@ -652,60 +702,109 @@ export const TransactionSheet: React.FC<Props> = ({
         ]}
       >
         <Pressable
-          onPress={() => { setType('expense'); setCategoryId(null); }}
+          onPress={() => { setTransferMode(false); setType('expense'); setCategoryId(null); }}
           style={[
             styles.typeBtn,
-            type === 'expense' && { backgroundColor: typeAccent },
+            expenseActive && { backgroundColor: typeAccent },
           ]}
           accessibilityLabel="Marcar como gasto"
-          accessibilityState={{ selected: type === 'expense' }}
+          aria-selected={expenseActive}
         >
           <Ionicons
             name="arrow-down-outline"
             size={15}
-            color={type === 'expense' ? '#FFFFFF' : palette.textSecondary}
+            color={expenseActive ? '#FFFFFF' : palette.textSecondary}
           />
           <Text
             variant="label"
             weight="semibold"
-            style={{ color: type === 'expense' ? '#FFFFFF' : palette.textSecondary }}
+            style={{ color: expenseActive ? '#FFFFFF' : palette.textSecondary }}
           >
             Gasto
           </Text>
         </Pressable>
         <Pressable
-          onPress={() => { setType('income'); setCategoryId(null); }}
+          onPress={() => { setTransferMode(false); setType('income'); setCategoryId(null); }}
           style={[
             styles.typeBtn,
-            type === 'income' && { backgroundColor: typeAccent },
+            incomeActive && { backgroundColor: typeAccent },
           ]}
           accessibilityLabel="Marcar como ingreso"
-          accessibilityState={{ selected: type === 'income' }}
+          aria-selected={incomeActive}
         >
           <Ionicons
             name="arrow-up-outline"
             size={15}
-            color={type === 'income' ? '#FFFFFF' : palette.textSecondary}
+            color={incomeActive ? '#FFFFFF' : palette.textSecondary}
           />
           <Text
             variant="label"
             weight="semibold"
-            style={{ color: type === 'income' ? '#FFFFFF' : palette.textSecondary }}
+            style={{ color: incomeActive ? '#FFFFFF' : palette.textSecondary }}
           >
             Ingreso
           </Text>
         </Pressable>
+        {!editing && (
+          <Pressable
+            onPress={() => {
+              setTransferMode(true);
+              setTransferError('');
+            }}
+            style={[styles.typeBtn, transferMode && { backgroundColor: typeAccent }]}
+            accessibilityLabel="Transferir entre el saldo del mes y Mis ahorros"
+            aria-selected={transferMode}
+          >
+            <Ionicons name="swap-horizontal" size={15} color={transferMode ? '#FFFFFF' : palette.textSecondary} />
+            <Text variant="label" weight="semibold" style={{ color: transferMode ? '#FFFFFF' : palette.textSecondary }}>
+              Ahorro
+            </Text>
+          </Pressable>
+        )}
       </View>
+      )}
+
+      {transferMode && (
+        <View style={{ gap: spacing.sm }}>
+          <SegmentedControl
+            options={[
+              { value: 'to_savings', label: 'Gastos → Ahorro' },
+              { value: 'to_spending', label: 'Ahorro → Gastos' },
+            ]}
+            value={transferDir}
+            onChange={(v) => {
+              setTransferDir(v);
+              setTransferError('');
+            }}
+          />
+          <Text variant="caption" tone="muted">
+            Disponible en {transferDir === 'to_savings' ? 'el saldo del mes' : 'Mis ahorros'}:{' '}
+            {formatMoney(Math.max(0, transferAvailable), currency)}
+          </Text>
+        </View>
+      )}
 
       {/* Importe */}
-      <Input
-        label="Importe"
-        keyboardType="decimal-pad"
-        placeholder="0.00"
-        value={amount}
-        onChangeText={setAmount}
-      />
+      {!isTransfer && (
+        <Input
+          label="Importe"
+          keyboardType="decimal-pad"
+          placeholder="0.00"
+          value={amount}
+          onChangeText={(t) => {
+            setAmount(t);
+            setTransferError('');
+          }}
+        />
+      )}
+      {transferMode && !!transferError && (
+        <Text variant="caption" tone="danger" accessibilityLiveRegion="polite">
+          {transferError}
+        </Text>
+      )}
 
+      {!transferMode && !isTransfer && (
+      <>
       {/* Descripción */}
       <Input
         label="Descripción"
@@ -736,85 +835,67 @@ export const TransactionSheet: React.FC<Props> = ({
         </ScrollView>
       </View>
 
-      {/* Fecha + Método de pago en 2 columnas */}
-      <View style={styles.twoCol}>
-        <View style={{ flex: 1 }}>
-          <Input
-            label="Fecha"
-            placeholder="YYYY-MM-DD"
-            value={date}
-            onChangeText={setDate}
-            autoCapitalize="none"
-          />
-        </View>
-        {type === 'expense' && (
-          <View style={{ flex: 1, gap: spacing.xs }}>
-            <Text variant="label" tone="secondary">Tipo de pago</Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={[styles.chips, { paddingVertical: 2 }]}
-            >
-              {PAYMENT_METHODS.map((pm) => {
-                const active = paymentMethod === pm.value;
-                return (
-                  <Pressable
-                    key={pm.value}
-                    onPress={() => setPaymentMethod(active ? null : pm.value)}
+      {/* Fecha */}
+      <Input
+        label="Fecha"
+        placeholder="YYYY-MM-DD"
+        value={date}
+        onChangeText={setDate}
+        autoCapitalize="none"
+      />
+
+      {/* Tipo de pago (solo gastos): cuadrícula 3×2, todo a la vista y sin scroll */}
+      {type === 'expense' && (
+        <View style={{ gap: spacing.sm }}>
+          <Text variant="label" tone="secondary">Tipo de pago</Text>
+          <View style={styles.pmGrid} accessibilityRole="radiogroup">
+            {PAYMENT_METHODS.map((pm) => {
+              const active = paymentMethod === pm.value;
+              return (
+                <Pressable
+                  key={pm.value}
+                  onPress={() => setPaymentMethod(active ? null : pm.value)}
+                  style={({ pressed }) => [
+                    styles.pmTile,
+                    {
+                      backgroundColor: active ? palette.accentSoft : palette.bgElevated,
+                      borderColor: active ? palette.accent : palette.borderSubtle,
+                      opacity: pressed ? 0.8 : 1,
+                    },
+                  ]}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`Tipo de pago: ${pm.label}`}
+                  aria-checked={active}
+                >
+                  <View
                     style={[
-                      styles.pmChip,
-                      {
-                        backgroundColor: active ? palette.accentSoft : palette.bgElevated,
-                        borderColor: active ? palette.accent : palette.borderSubtle,
-                      },
+                      styles.pmIcon,
+                      { backgroundColor: active ? palette.accent : palette.bgSurface },
                     ]}
-                    accessibilityLabel={`Método de pago: ${pm.label}`}
-                    accessibilityState={{ selected: active }}
                   >
                     <Ionicons
                       name={pm.icon}
-                      size={13}
-                      color={active ? palette.accent : palette.textSecondary}
+                      size={18}
+                      color={active ? palette.textInverted : palette.textSecondary}
                     />
-                    <Text
-                      variant="caption"
-                      weight={active ? 'semibold' : 'medium'}
-                      tone={active ? 'accent' : 'secondary'}
-                    >
-                      {pm.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+                  </View>
+                  <Text
+                    variant="caption"
+                    weight={active ? 'semibold' : 'medium'}
+                    tone={active ? 'accent' : 'secondary'}
+                    align="center"
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                  >
+                    {pm.shortLabel}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
-        )}
-      </View>
-
-      {/* Scope — selector dual (Saldo del mes / Mis ahorros) */}
-      <View style={{ gap: spacing.xs }}>
-        <Text variant="label" tone="secondary">Mover a</Text>
-        <View
-          style={{ opacity: scopeLocked ? 0.55 : 1 }}
-          pointerEvents={scopeLocked ? 'none' : 'auto'}
-        >
-          <SegmentedControl
-            options={[
-              { value: 'month', label: 'Saldo del mes' },
-              { value: 'historical', label: 'Mis ahorros' },
-            ]}
-            value={scope}
-            onChange={setScope}
-          />
         </View>
-        <Text variant="caption" tone="muted">
-          {scopeLocked
-            ? 'Las contribuciones a una meta no pueden cambiar de pool. Para moverlas, retira y vuelve a aportar.'
-            : scope === 'historical'
-            ? 'Esta transacción afecta directamente a "Mis ahorros", sin pasar por el saldo del mes.'
-            : 'Forma parte del periodo en curso. Cuando el mes cierre, su efecto pasa a "Mis ahorros".'}
-        </Text>
-      </View>
+      )}
 
       {/* Foto del ticket */}
       <ReceiptBlock />
@@ -827,6 +908,8 @@ export const TransactionSheet: React.FC<Props> = ({
         onChangeText={setNotes}
         multiline
       />
+      </>
+      )}
     </Sheet>
   );
 };
@@ -837,14 +920,29 @@ export const TransactionSheet: React.FC<Props> = ({
 
 const styles = StyleSheet.create({
   chips: { gap: spacing.sm, paddingVertical: 4 },
-  pmChip: {
+  pmGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  pmTile: {
+    flexGrow: 1,
+    flexBasis: '30%',
+    minHeight: 72,
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    borderRadius: radius.md,
     borderWidth: 1,
+  },
+  pmIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   infoBanner: {
     flexDirection: 'row',
@@ -870,11 +968,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: radius.md - 2,
     minHeight: 44,
-  },
-  twoCol: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    alignItems: 'flex-start',
   },
   // Receipt
   receiptButtons: {

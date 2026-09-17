@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import { NavigationContainer, DefaultTheme, DarkTheme } from '@react-navigation/native';
 import { useTheme } from '../theme/ThemeProvider';
@@ -11,11 +11,24 @@ import { OnboardingHost } from '../onboarding/OnboardingHost';
 import { useSecurityStore } from '../store/useSecurityStore';
 import { LockScreen } from '../screens/auth/LockScreen';
 import { useOnboardingStore } from '../store/useOnboardingStore';
+import { useFinancialProfileSync } from '../hooks/useFinancialProfileSync';
+import { track } from '../utils/analytics';
 
 export const RootNavigator: React.FC = () => {
   const { mode, palette } = useTheme();
   const { token, bootstrapped, bootstrap, logout } = useAuthStore();
   const locked = useSecurityStore((s) => s.locked && s.enabled);
+  useFinancialProfileSync();
+
+  // Vista de pantalla: ruta activa más profunda, sin repetir si no cambia.
+  // Sin sesión no hay navigator (las pantallas de auth las cuenta AuthNavigator).
+  const lastRouteRef = useRef<string | undefined>(undefined);
+  const trackScreen = useCallback(() => {
+    const name = navigationRef.isReady() ? navigationRef.getCurrentRoute()?.name : undefined;
+    if (name === lastRouteRef.current) return;
+    lastRouteRef.current = name;
+    if (name) track('screen', name);
+  }, []);
 
   useEffect(() => {
     bootstrap();
@@ -89,7 +102,7 @@ export const RootNavigator: React.FC = () => {
   }
 
   return (
-    <NavigationContainer theme={navTheme} ref={navigationRef}>
+    <NavigationContainer theme={navTheme} ref={navigationRef} onReady={trackScreen} onStateChange={trackScreen}>
       {token ? <AppNavigator /> : <AuthNavigator />}
       {token && <OnboardingHost />}
       {token && locked && <LockScreen />}

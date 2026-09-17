@@ -1,4 +1,4 @@
-import type { Transaction } from '../api/types';
+import type { AnalyticsSummary, Transaction } from '../api/types';
 
 export type BalanceMode = 'month' | 'historical';
 
@@ -31,4 +31,34 @@ export function filterByBalanceMode<T extends Scopeable>(
   return items.filter(
     (t) => t.transaction_date < currentPeriodStart || t.scope === 'historical',
   );
+}
+
+export type MonthFigures = { income: number; expense: number; balance: number; savingsRatio: number };
+
+type SummaryFigures = Pick<
+  AnalyticsSummary,
+  'total_income' | 'total_expense' | 'balance' | 'savings_ratio' | 'period_income' | 'period_expense' | 'period_balance'
+>;
+
+/**
+ * Cifras de "Saldo del mes". En el mes actual son las del periodo financiero en
+ * curso (del día de cobro al siguiente, sin lo movido a "Mis ahorros"), que es lo
+ * que cuadra con "Mis ahorros" y con lo que valida el servidor al aportar a una
+ * meta. Al consultar otro mes, o con un backend sin esos campos, las del mes natural.
+ */
+export function monthBalanceFigures(summary: SummaryFigures | null | undefined, isCurrentMonth: boolean): MonthFigures {
+  if (!summary) return { income: 0, expense: 0, balance: 0, savingsRatio: 0 };
+  if (isCurrentMonth && summary.period_balance != null) {
+    const income = Number(summary.period_income) || 0;
+    const expense = Number(summary.period_expense) || 0;
+    const balance = Number(summary.period_balance) || 0;
+    const savingsRatio = income > 0 ? Math.round((balance / income) * 10000) / 100 : 0;
+    return { income, expense, balance, savingsRatio };
+  }
+  return {
+    income: Number(summary.total_income) || 0,
+    expense: Number(summary.total_expense) || 0,
+    balance: Number(summary.balance) || 0,
+    savingsRatio: Number(summary.savings_ratio) || 0,
+  };
 }

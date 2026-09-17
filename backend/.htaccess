@@ -30,6 +30,17 @@
     Header always set Access-Control-Max-Age "86400"
 </IfModule>
 
+# No servir ficheros que no son la API (volcados SQL, composer.*, logs, notas)
+<FilesMatch "\.(sql|lock|json|md|log)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
 # Forzar que las respuestas 204/200 de OPTIONS no se cacheen mal
 <IfModule mod_env.c>
     SetEnv no-gzip 1

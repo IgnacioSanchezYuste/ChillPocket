@@ -35,6 +35,11 @@ export type Transaction = {
   updated_at: string;
   /** Fase 2: determina si la transacción afecta al saldo del mes o a "Mis ahorros". */
   scope?: 'month' | 'historical';
+  /**
+   * Transferencia entre cuentas: 0 = movimiento normal, 1 = manual, 2 = ahorro automático.
+   * Gasto = del saldo del mes a "Mis ahorros"; ingreso = de "Mis ahorros" al saldo del mes.
+   */
+  transfer?: 0 | 1 | 2;
   /** Recibos (Ola 2): ruta del justificante en el servidor; null si no se ha adjuntado foto. */
   receipt_path?: string | null;
 };
@@ -139,6 +144,15 @@ export type AnalyticsSummary = {
   saved_this_month: number;
   /** Fase 2: inicio del periodo financiero actual ('YYYY-MM-DD'). Opcional para no romper el frontend de Fase 1. */
   current_period_start?: string;
+  /** Inicio del siguiente periodo (exclusivo). */
+  next_period_start?: string;
+  /**
+   * "Saldo del mes" del modelo dual: solo scope='month' dentro del periodo en curso.
+   * total_income/total_expense/balance son del mes natural consultado (gráficos).
+   */
+  period_income?: number;
+  period_expense?: number;
+  period_balance?: number;
   /** Ola 2: estadísticas de la meta de ahorro mensual. Puede ser null si el backend falla. */
   savings_goal_stats?: SavingsGoalStats | null;
 };
@@ -213,6 +227,15 @@ export type User = {
   avatar_url: string | null;
   theme: 'light' | 'dark' | 'system';
   created_at: string;
+  /** Perfil financiero (modelo dual). Ingreso en equivalente mensual. */
+  income_reference?: number | null;
+  /** Día del mes de cobro (1-31, 31 = fin de mes). null = mes natural. */
+  income_payday?: number | null;
+  savings_goal_monthly?: number | null;
+  /** Email confirmado con código (o por Google). Necesario para mejorar de plan. */
+  email_verified?: boolean;
+  /** Administrador (ADMIN_EMAILS en el servidor): ve el panel de uso. */
+  is_admin?: boolean;
   // Billing (Fase 1: el backend siempre lo adjunta; existe por compatibilidad).
   plan_code?: PlanCode;
   plan_name?: string;
@@ -225,3 +248,66 @@ export type User = {
 };
 
 export type AuthResponse = { success: true; token: string; user: User; is_new?: boolean };
+
+// -------- DIVISAS --------
+export type SupportedCurrency = 'EUR' | 'USD' | 'GBP' | 'MXN';
+
+export type ExchangeRate = {
+  from: string;
+  to: string;
+  /** 1 `from` = `rate` `to`. */
+  rate: number;
+  /** Fecha del cambio publicado por el BCE (YYYY-MM-DD). */
+  date: string;
+  source: string;
+};
+
+export type CurrencyConversionResult = {
+  success: true;
+  user: User;
+  rate: number;
+  converted: { transactions: number; recurring: number; budgets: number; goals: number };
+};
+
+// -------- USO (monitoreo propio, anónimo y agregado) --------
+export type UsagePlatform = 'ios' | 'android' | 'web';
+
+export type UsageBatch = {
+  /** Día al que pertenecen los eventos (YYYY-MM-DD, como mucho 7 días atrás). */
+  day: string;
+  platform: UsagePlatform;
+  app_version?: string;
+  /** Nombre del evento → veces. Nombre: /^[A-Za-z0-9_.:-]{1,64}$/. Máx. 60 nombres, 1-500 por nombre. */
+  events: Record<string, number>;
+  /** Eventos que este usuario hace por primera vez ese día (cuentan como usuario único). */
+  first_today?: string[];
+};
+
+export type UsageReport = {
+  days: number;
+  from: string;
+  to: string;
+  overview: {
+    users_total: number;
+    users_new: number;
+    /** Usuarios con algún movimiento creado en el periodo. */
+    users_active: number;
+    verified_pct: number;
+    plans: { plan_code: string; users: number }[];
+  };
+  /** Ordenado por `events` descendente. */
+  totals: { event: string; events: number; users: number }[];
+  by_platform: { platform: UsagePlatform; events: number }[];
+  /** Serie diaria del evento `app_open` (días sin datos incluidos con 0). */
+  daily: { day: string; events: number; users: number }[];
+};
+
+export type MailTestResult = {
+  success: boolean;
+  /** A quién se envió (email del administrador). */
+  to?: string;
+  /** Detalle del error SMTP (solo para administradores). */
+  message?: string;
+  /** Qué claves SMTP_* encuentra el servidor (sin valores). */
+  config: Record<string, boolean>;
+};

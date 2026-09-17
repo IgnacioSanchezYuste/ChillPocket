@@ -23,6 +23,7 @@ import { useToast } from '../../components/Toast';
 import { budgetsApi } from '../../api/endpoints';
 import { apiError } from '../../api/http';
 import { confirmDelete } from '../../utils/confirm';
+import { track } from '../../utils/analytics';
 import { currentMonthYear, formatMoney, monthLabel } from '../../utils/format';
 import type { Budget, Category } from '../../api/types';
 
@@ -103,6 +104,7 @@ export const BudgetsScreen: React.FC = () => {
           reset_day: rd,
           auto_renew: autoRenew,
         });
+        track('budget_created');
         toast.success('Presupuesto guardado');
       }
       await fetchBudgets(activeMonth, true);

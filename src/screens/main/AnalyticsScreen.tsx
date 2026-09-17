@@ -20,6 +20,7 @@ import { SpendingHabits } from '../../components/SpendingHabits';
 import { DonutChart } from '../../components/DonutChart';
 import { Sparkline } from '../../components/Sparkline';
 import { MonthPickerModal } from '../../components/MonthPickerModal';
+import { FinancialProfileSheet } from '../modals/FinancialProfileSheet';
 import { PremiumLock } from '../../components/PremiumLock';
 import { useBilling } from '../../store/useBillingStore';
 import { formatMoney, monthLabel, currentMonthYear } from '../../utils/format';
@@ -60,6 +61,7 @@ export const AnalyticsScreen: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [carouselMonth, setCarouselMonth] = useState<string>(currentMonthYear());
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [profileSheetOpen, setProfileSheetOpen] = useState(false);
 
   const carouselCategories: CategoryStat[] = useMemo(() => {
     if (carouselMonth === (summary?.month_year || currentMonthYear())) {
@@ -260,7 +262,7 @@ export const AnalyticsScreen: React.FC = () => {
               canAdvanced={canAdvanced}
               currency={currency}
               chartW={chartWFull}
-              onGoToGoals={() => navigation.navigate('Goals')}
+              onEditGoal={() => setProfileSheetOpen(true)}
             />
 
             {/* Gastos por categoría · donut + leyenda */}
@@ -613,6 +615,7 @@ export const AnalyticsScreen: React.FC = () => {
         </ScrollView>
       </SafeAreaView>
 
+      <FinancialProfileSheet visible={profileSheetOpen} onClose={() => setProfileSheetOpen(false)} />
       <MonthPickerModal
         visible={monthPickerOpen}
         selected={selectedMonth}
@@ -745,15 +748,22 @@ type SavingsGoalSectionProps = {
   canAdvanced: boolean;
   currency: string;
   chartW: number;
-  onGoToGoals: () => void;
+  /** Abre "Ingresos y ahorro" (el objetivo es el ahorro automático mensual). */
+  onEditGoal: () => void;
 };
+
+const EditGoalLink: React.FC<{ onPress: () => void }> = ({ onPress }) => (
+  <Pressable onPress={onPress} hitSlop={8} accessibilityRole="button" style={{ marginLeft: 'auto' }}>
+    <Text variant="label" tone="accent" weight="semibold">Editar</Text>
+  </Pressable>
+);
 
 const SavingsGoalSection: React.FC<SavingsGoalSectionProps> = ({
   stats,
   canAdvanced,
   currency,
   chartW,
-  onGoToGoals,
+  onEditGoal,
 }) => {
   const { palette } = useTheme();
 
@@ -776,9 +786,9 @@ const SavingsGoalSection: React.FC<SavingsGoalSectionProps> = ({
         <EmptyState
           icon="flag-outline"
           title="Sin objetivo mensual"
-          description="Define cuánto quieres ahorrar cada mes y te mostraremos tu racha."
+          description="Elige cuánto pasar cada mes a Mis ahorros y te mostraremos tu racha."
           ctaLabel="Definir objetivo"
-          onCta={onGoToGoals}
+          onCta={onEditGoal}
         />
       </Card>
     );
@@ -796,6 +806,7 @@ const SavingsGoalSection: React.FC<SavingsGoalSectionProps> = ({
             <Text variant="h2">Meta de ahorro</Text>
             <Text variant="caption" tone="muted">Seguimiento mensual</Text>
           </View>
+          <EditGoalLink onPress={onEditGoal} />
         </View>
         <EmptyState
           icon="time-outline"
@@ -823,6 +834,7 @@ const SavingsGoalSection: React.FC<SavingsGoalSectionProps> = ({
             Objetivo: {formatMoney(stats.goal, currency)}/mes
           </Text>
         </View>
+        <EditGoalLink onPress={onEditGoal} />
       </View>
 
       {/* ------------------------------------------------------------------ */}

@@ -1,4 +1,4 @@
-import { filterByBalanceMode } from '../balanceMode';
+import { filterByBalanceMode, monthBalanceFigures } from '../balanceMode';
 
 type Tx = { id: number; transaction_date: string; scope?: 'month' | 'historical' };
 
@@ -30,5 +30,39 @@ describe('filterByBalanceMode', () => {
     const month = filterByBalanceMode(txs, 'month', '2026-03-01');
     const historical = filterByBalanceMode(txs, 'historical', '2026-03-01');
     expect(month.length + historical.length).toBe(txs.length);
+  });
+});
+
+describe('monthBalanceFigures', () => {
+  const summary = {
+    total_income: 200,
+    total_expense: 50,
+    balance: 150,
+    savings_ratio: 75,
+    period_income: 1000,
+    period_expense: 50,
+    period_balance: 950,
+  };
+
+  it('mes actual: usa el periodo en curso', () => {
+    expect(monthBalanceFigures(summary, true)).toEqual({ income: 1000, expense: 50, balance: 950, savingsRatio: 95 });
+  });
+
+  it('otro mes: usa el mes natural consultado', () => {
+    expect(monthBalanceFigures(summary, false)).toEqual({ income: 200, expense: 50, balance: 150, savingsRatio: 75 });
+  });
+
+  it('backend sin campos de periodo: cae al mes natural', () => {
+    const { period_income, period_expense, period_balance, ...legacy } = summary;
+    expect(monthBalanceFigures(legacy, true).balance).toBe(150);
+  });
+
+  it('periodo sin ingresos: % libre 0 y saldo negativo', () => {
+    expect(monthBalanceFigures({ ...summary, period_income: 0, period_expense: 50, period_balance: -50 }, true))
+      .toEqual({ income: 0, expense: 50, balance: -50, savingsRatio: 0 });
+  });
+
+  it('sin resumen todo es 0', () => {
+    expect(monthBalanceFigures(null, true)).toEqual({ income: 0, expense: 0, balance: 0, savingsRatio: 0 });
   });
 });

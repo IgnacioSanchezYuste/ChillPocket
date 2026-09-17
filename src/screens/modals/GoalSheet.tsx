@@ -14,6 +14,7 @@ import { useTheme } from '../../theme/ThemeProvider';
 import { spacing, radius } from '../../theme/spacing';
 import { apiError } from '../../api/http';
 import { confirmDelete } from '../../utils/confirm';
+import { track } from '../../utils/analytics';
 import { formatMoney } from '../../utils/format';
 import type { SavingsGoal } from '../../api/types';
 
@@ -90,6 +91,7 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
           target_amount: t,
           target_date: date || undefined,
         });
+        track('goal_created');
         toast.success('Meta creada');
       }
       await fetchGoals();
@@ -121,6 +123,7 @@ export const GoalSheet: React.FC<Props> = ({ visible, onClose, editing, onSaved 
     try {
       const signed = direction === 'in' ? amt : -amt;
       await goalsApi.contribute(editing.id, signed, scope);
+      track(direction === 'in' ? 'goal_contribution' : 'goal_withdrawal');
       await refreshAll(true);
       toast.success(direction === 'in' ? 'Aportación registrada' : 'Retirada registrada');
       onSaved?.();

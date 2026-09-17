@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, ScrollView, Pressable, TextInput, Platform, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View, StyleSheet, ScrollView, Pressable, TextInput, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,9 +18,13 @@ import type { FinanceGoal, IncomeFrequency, OnboardingDraft } from '../store/use
 import { useAuthStore } from '../store/useAuthStore';
 import { useDataStore } from '../store/useDataStore';
 import { usePreferencesStore } from '../store/usePreferencesStore';
+import type { AxiosError } from 'axios';
 import { authApi } from '../api/endpoints';
 import { navigateToTab } from '../navigation/navigationRef';
 import { formatMoney } from '../utils/format';
+import { monthlyIncome, nextIncomeDate, periodLengthDays, periodPayday, serverFinancialProfile } from '../utils/financialPeriod';
+import { WheelPicker } from '../components/WheelPicker';
+import { MONTH_DAYS, WEEKDAYS } from '../utils/paydayOptions';
 import type { Projection, Recurring, Transaction } from '../api/types';
 
 const CURRENCIES = [
@@ -57,62 +61,10 @@ const THEMES: { key: 'light' | 'dark' | 'system'; icon: keyof typeof Ionicons.gl
  * 5 — tema
  */
 const PERSONALIZE_TOTAL = 6;
+/** Tope del servidor para importes mensuales (DECIMAL(10,2)). */
+const MAX_MONTHLY_AMOUNT = 99_999_999;
 
 const goalLabel = (g: FinanceGoal | null) => GOALS.find((x) => x.key === g)?.label ?? '—';
-
-/** Días de la semana para selector semanal (domingo=0). */
-const WEEKDAYS = [
-  { label: 'L', value: 1 },
-  { label: 'M', value: 2 },
-  { label: 'X', value: 3 },
-  { label: 'J', value: 4 },
-  { label: 'V', value: 5 },
-  { label: 'S', value: 6 },
-  { label: 'D', value: 0 },
-];
-
-/** Días del mes: 1-28 + fin de mes (31). */
-const MONTH_DAYS = [
-  ...Array.from({ length: 28 }, (_, i) => ({ label: String(i + 1), value: i + 1 })),
-  { label: 'Fin mes', value: 31 },
-];
-
-/**
- * Calcula la start_date del recurrente de ingreso para que caiga en el
- * día de cobro del mes actual. Si ese día ya pasó, usa el mes siguiente.
- * payday: 1-31 mensual (31 = fin de mes).
- */
-function computeIncomeStartDate(payday: number | null): string {
-  if (payday === null) return todayISO();
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth(); // 0-based
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const day = payday === 31 ? daysInMonth : Math.min(payday, daysInMonth);
-  const todayDate = new Date(year, month, now.getDate());
-  const target = new Date(year, month, day);
-  if (target < todayDate) {
-    const nextMonthIdx = month + 1;
-    const nextYear = nextMonthIdx > 11 ? year + 1 : year;
-    const nm = nextMonthIdx > 11 ? 0 : nextMonthIdx;
-    const daysNext = new Date(nextYear, nm + 1, 0).getDate();
-    const dayNext = payday === 31 ? daysNext : Math.min(payday, daysNext);
-    return `${String(nextYear).padStart(4, '0')}-${String(nm + 1).padStart(2, '0')}-${String(dayNext).padStart(2, '0')}`;
-  }
-  return `${String(year).padStart(4, '0')}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-/** Días que quedan en el mes actual (incluyendo hoy). */
-function daysRemainingInMonth(): number {
-  const now = new Date();
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  return lastDay - now.getDate() + 1;
-}
 
 /** Equivalente mensual de un recurrente (semanal × 4.345, anual / 12). */
 function monthlyEquivalent(amount: number, frequency: 'weekly' | 'monthly' | 'yearly'): number {
@@ -180,11 +132,22 @@ export const OnboardingHost: React.FC = () => {
 
   const applyPersonalization = async () => {
     try {
-      const updated = await authApi.updateMe({
+      const profile = {
         name: draft.name.trim() || undefined,
-        currency: draft.currency,
-      } as any);
+        ...serverFinancialProfile(draft),
+      };
+      // Con datos ya guardados, la moneda solo se cambia desde Ajustes (convirtiendo).
+      const currency = skipCreationPhases ? undefined : draft.currency;
+      let updated;
+      try {
+        updated = await authApi.updateMe({ ...profile, currency });
+      } catch (e) {
+        if ((e as AxiosError<any>)?.response?.data?.code !== 'currency_conversion_required') throw e;
+        updated = await authApi.updateMe(profile);
+      }
       if (updated) setUser(updated);
+      // Si la moneda elegida no se aplicó (409), el resto del tutorial usa la real.
+      if (updated?.currency && updated.currency !== draft.currency) setDraft({ currency: updated.currency });
     } catch {
       /* sin red: seguimos igual */
     }
@@ -235,6 +198,7 @@ export const OnboardingHost: React.FC = () => {
         setDraft={setDraft}
         setPersonalizeStep={setPersonalizeStep}
         onFinish={applyPersonalization}
+        currencyLocked={skipCreationPhases}
       />
     );
   }
@@ -328,8 +292,8 @@ export const OnboardingHost: React.FC = () => {
     };
   }
 
-  // Calcula la start_date del recurrente de ingreso basándose en el payday del draft.
-  const incomeStartDate = computeIncomeStartDate(draft.incomePayday);
+  // Próximo cobro según la frecuencia: día del mes (mensual) o de la semana (semanal).
+  const incomeStartDate = nextIncomeDate(draft.incomeFrequency, draft.incomePayday);
   // Frequency para el RecurringSheet de ingreso: semanal → weekly, resto → monthly.
   const incomeFreqForSheet: 'weekly' | 'monthly' = draft.incomeFrequency === 'weekly' ? 'weekly' : 'monthly';
 
@@ -368,7 +332,7 @@ export const OnboardingHost: React.FC = () => {
           frequency: incomeFreqForSheet,
           categoryName: 'Salario',
         }}
-        forcedStartDate={draft.incomePayday !== null ? incomeStartDate : undefined}
+        forcedStartDate={incomeStartDate ?? undefined}
         onClose={() => setOpenSheet(null)}
         onSaved={() => {
           // El salario (Nómina) NO es demo: queremos que persista tras el tuto
@@ -390,6 +354,8 @@ type PersonalizePhaseProps = {
   setDraft: (patch: Partial<OnboardingDraft>) => void;
   setPersonalizeStep: (n: number) => void;
   onFinish: () => void;
+  /** Repetición con datos: la moneda se cambia en Ajustes (con conversión). */
+  currencyLocked?: boolean;
 };
 
 const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
@@ -399,6 +365,7 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
   setDraft,
   setPersonalizeStep,
   onFinish,
+  currencyLocked = false,
 }) => {
   // Estados locales para el paso de frecuencia (step 3)
   const [amountText, setAmountText] = useState('');
@@ -417,6 +384,9 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
     }
   }, [personalizeStep]);
 
+  const incomePerMonth =
+    draft.incomeFrequency === 'variable' ? null : monthlyIncome(draft.incomeFrequency, draft.incomeAmount);
+
   const canNext = useMemo((): boolean => {
     if (personalizeStep === 0) return true;
     if (personalizeStep === 2) return !!draft.goal;
@@ -424,7 +394,8 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
       if (draft.incomeFrequency === 'variable') return true;
       if (!draft.incomeFrequency) return false;
       const amt = parseFloat(amountText.replace(',', '.'));
-      return Number.isFinite(amt) && amt > 0;
+      const perMonth = monthlyIncome(draft.incomeFrequency, amt);
+      return Number.isFinite(amt) && amt > 0 && perMonth !== null && perMonth <= MAX_MONTHLY_AMOUNT;
     }
     if (personalizeStep === 4) {
       const rawText = savingsText.trim();
@@ -432,11 +403,11 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
       if (rawText === '') return true;
       const savings = parseFloat(rawText.replace(',', '.'));
       if (!Number.isFinite(savings) || savings < 0) return false;
-      if (draft.incomeAmount !== null && savings >= draft.incomeAmount) return false;
+      if (incomePerMonth !== null && savings >= incomePerMonth) return false;
       return true;
     }
     return true;
-  }, [personalizeStep, draft.goal, draft.incomeFrequency, draft.incomeAmount, amountText, savingsText]);
+  }, [personalizeStep, draft.goal, draft.incomeFrequency, incomePerMonth, amountText, savingsText]);
 
   const isLast = personalizeStep === PERSONALIZE_TOTAL - 1;
 
@@ -479,8 +450,8 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
     }
     if (savings < 0) {
       setSavingsError('El objetivo no puede ser negativo');
-    } else if (draft.incomeAmount !== null && savings >= draft.incomeAmount) {
-      setSavingsError('El objetivo debe ser menor que el ingreso');
+    } else if (incomePerMonth !== null && savings >= incomePerMonth) {
+      setSavingsError('El objetivo debe ser menor que tu ingreso mensual');
     } else {
       setSavingsError('');
     }
@@ -505,8 +476,15 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
           </Step>
         )}
         {personalizeStep === 1 && (
-          <Step title="Tu moneda principal" subtitle="La usaremos en todos tus movimientos.">
-            <View style={styles.grid}>
+          <Step
+            title="Tu moneda principal"
+            subtitle={
+              currencyLocked
+                ? 'Para cambiarla y convertir tus importes, ve a Ajustes → Moneda.'
+                : 'La usaremos en todos tus movimientos.'
+            }
+          >
+            <View style={[styles.grid, currencyLocked && { opacity: 0.5 }]} pointerEvents={currencyLocked ? 'none' : 'auto'}>
               {CURRENCIES.map((c) => (
                 <OptionCard
                   key={c.code}
@@ -544,8 +522,8 @@ const PersonalizePhase: React.FC<PersonalizePhaseProps> = ({
             savingsText={savingsText}
             onSavingsChange={handleSavingsChange}
             onSelectChip={(pct) => {
-              if (draft.incomeAmount === null) return;
-              const goal = Math.round(draft.incomeAmount * pct);
+              if (incomePerMonth === null) return;
+              const goal = Math.round(incomePerMonth * pct);
               setSavingsText(String(goal));
               setSavingsError('');
             }}
@@ -595,13 +573,12 @@ type FrequencyStepProps = {
 const FrequencyStep: React.FC<FrequencyStepProps> = ({ palette, draft, amountText, setAmountText, setDraft }) => {
   const freq = draft.incomeFrequency;
 
-  // Garantiza que al entrar en modo mensual con payday=null, se inicialice a 1.
-  // Así el usuario puede avanzar sin tocar el wheel.
+  // Red de seguridad: en mensual siempre hay un día elegido (la rueda muestra el 1).
   useEffect(() => {
     if (freq === 'monthly' && draft.incomePayday === null) {
       setDraft({ incomePayday: 1 });
     }
-  }, [freq]);
+  }, [freq, draft.incomePayday]);
 
   const amountLabel =
     freq === 'weekly' ? 'Tu salario semanal' :
@@ -617,7 +594,13 @@ const FrequencyStep: React.FC<FrequencyStepProps> = ({ palette, draft, amountTex
             label={f.label}
             selected={freq === f.key}
             onPress={() => {
-              setDraft({ incomeFrequency: f.key, incomePayday: null });
+              if (f.key === freq) return;
+              setDraft({
+                incomeFrequency: f.key,
+                incomePayday: f.key === 'monthly' ? 1 : null,
+                // Con ingreso variable no se guarda el importe escrito antes.
+                ...(f.key === 'variable' ? { incomeAmount: null } : {}),
+              });
             }}
           />
         ))}
@@ -638,7 +621,7 @@ const FrequencyStep: React.FC<FrequencyStepProps> = ({ palette, draft, amountTex
               items={MONTH_DAYS}
               value={draft.incomePayday ?? 1}
               onChange={(v) => setDraft({ incomePayday: v })}
-              palette={palette}
+              accessibilityLabel="Día del mes que cobras"
             />
           </View>
         </View>
@@ -707,7 +690,7 @@ const SavingsGoalStep: React.FC<SavingsGoalStepProps> = ({
   savingsError,
 }) => {
   const isVariable = draft.incomeFrequency === 'variable';
-  const incomeAmount = draft.incomeAmount;
+  const incomeAmount = isVariable ? null : monthlyIncome(draft.incomeFrequency, draft.incomeAmount);
 
   return (
     <Step
@@ -715,7 +698,7 @@ const SavingsGoalStep: React.FC<SavingsGoalStepProps> = ({
       subtitle="Cada euro que ahorras hoy es libertad mañana. Ponlo fácil con un objetivo claro."
     >
       <MoneyInput
-        label="Objetivo de ahorro mensual"
+        label="Ahorro automático mensual"
         value={savingsText}
         onChangeText={onSavingsChange}
         palette={palette}
@@ -760,7 +743,7 @@ const SavingsGoalStep: React.FC<SavingsGoalStepProps> = ({
       <View style={[styles.infoBox, { backgroundColor: palette.accentSoft, borderColor: palette.accent }]}>
         <Ionicons name="information-circle-outline" size={18} color={palette.accent} />
         <Text variant="caption" tone="accent" style={{ flex: 1 }}>
-          Puedes cambiar este objetivo en cualquier momento desde Ajustes.
+          Cada día de cobro esta cantidad pasa sola a Mis ahorros. Puedes cambiarla cuando quieras en Ajustes → Ingresos y ahorro.
         </Text>
       </View>
     </Step>
@@ -796,14 +779,17 @@ const SuccessPhase: React.FC<SuccessPhaseProps> = ({
   // del objetivo de ahorro, para que el número cuadre con lo que verá luego.
   const personalizedMsg = useMemo((): string | null => {
     if (draft.incomeFrequency === 'variable') return null;
-    if (!draft.incomeAmount || draft.savingsGoalMonthly === null) return null;
+    const income = monthlyIncome(draft.incomeFrequency, draft.incomeAmount);
+    if (!income || draft.savingsGoalMonthly === null) return null;
     const realFixedMonthly = recurring
       .filter((r) => r.type === 'expense' && r.is_active === 1 && !demoRecurringIds.includes(r.id))
       .reduce((sum, r) => sum + monthlyEquivalent(r.amount, r.frequency), 0);
-    const spendable = draft.incomeAmount - draft.savingsGoalMonthly - realFixedMonthly;
+    const spendable = income - draft.savingsGoalMonthly - realFixedMonthly;
     if (spendable <= 0) return null;
-    const daysLeft = daysRemainingInMonth();
-    const dailyBudget = spendable / daysLeft;
+    // Media diaria del periodo completo: repartir el sueldo entero entre los días
+    // que faltan para el cobro daría cifras absurdas si cobra mañana.
+    const periodDays = periodLengthDays(periodPayday(draft.incomeFrequency, draft.incomePayday));
+    const dailyBudget = spendable / periodDays;
     const name = draft.name.trim() || 'tú';
     return `Hola ${name}, hoy puedes gastar ${formatMoney(dailyBudget, draft.currency)} y seguir ahorrando ${formatMoney(draft.savingsGoalMonthly, draft.currency)} este mes 🎯`;
   }, [draft, recurring, demoRecurringIds]);
@@ -976,140 +962,6 @@ const MoneyInput: React.FC<{
   </View>
 );
 
-// ---- Wheel Picker ----
-
-const WHEEL_ITEM_HEIGHT = 44;
-const WHEEL_VISIBLE_HEIGHT = 198; // 44 * 4.5 — se ven el central + 2 arriba + 2 abajo
-const WHEEL_PADDING = (WHEEL_VISIBLE_HEIGHT - WHEEL_ITEM_HEIGHT) / 2;
-
-type WheelPickerItem = { label: string; value: number };
-
-type WheelPickerProps = {
-  items: WheelPickerItem[];
-  value: number;
-  onChange: (v: number) => void;
-  palette: Palette;
-};
-
-/**
- * Wheel picker vertical tipo iOS.
- * Implementación pura con ScrollView + snapToInterval.
- * Compatible web (react-native-web soporta ScrollView con rueda del ratón).
- */
-const WheelPicker: React.FC<WheelPickerProps> = ({ items, value, onChange, palette }) => {
-  const scrollRef = useRef<ScrollView>(null);
-  const [currentIndex, setCurrentIndex] = useState<number>(() => {
-    const idx = items.findIndex((it) => it.value === value);
-    return idx >= 0 ? idx : 0;
-  });
-
-  // Sincronizar posición del scroll cuando el valor cambia externamente (ej. primer render).
-  useEffect(() => {
-    const idx = items.findIndex((it) => it.value === value);
-    const target = idx >= 0 ? idx : 0;
-    setCurrentIndex(target);
-    // Usamos requestAnimationFrame para asegurar que el ScrollView está montado.
-    const handle = setTimeout(() => {
-      scrollRef.current?.scrollTo({ y: target * WHEEL_ITEM_HEIGHT, animated: false });
-    }, 0);
-    return () => clearTimeout(handle);
-  }, [value, items]);
-
-  const handleMomentumScrollEnd = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const offsetY = e.nativeEvent.contentOffset.y;
-      const idx = Math.round(offsetY / WHEEL_ITEM_HEIGHT);
-      const clamped = Math.max(0, Math.min(idx, items.length - 1));
-      setCurrentIndex(clamped);
-      onChange(items[clamped].value);
-    },
-    [items, onChange],
-  );
-
-  // En web, onMomentumScrollEnd no siempre dispara; usamos onScrollEndDrag también.
-  const handleScrollEnd = useCallback(
-    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      if (Platform.OS !== 'web') return;
-      const offsetY = e.nativeEvent.contentOffset.y;
-      const idx = Math.round(offsetY / WHEEL_ITEM_HEIGHT);
-      const clamped = Math.max(0, Math.min(idx, items.length - 1));
-      setCurrentIndex(clamped);
-      onChange(items[clamped].value);
-    },
-    [items, onChange],
-  );
-
-  return (
-    <View style={[styles.wheelContainer, { borderColor: palette.borderSubtle }]}>
-      {/* Líneas indicadoras del carril central */}
-      <View
-        pointerEvents="none"
-        style={[
-          styles.wheelRailTop,
-          { top: WHEEL_PADDING, borderColor: palette.borderSubtle },
-        ]}
-      />
-      <View
-        pointerEvents="none"
-        style={[
-          styles.wheelRailBottom,
-          { top: WHEEL_PADDING + WHEEL_ITEM_HEIGHT, borderColor: palette.borderSubtle },
-        ]}
-      />
-
-      {/* Degradado superior */}
-      <LinearGradient
-        pointerEvents="none"
-        colors={[palette.bgBase, 'transparent'] as [string, string]}
-        style={[styles.wheelFadeTop]}
-      />
-
-      <ScrollView
-        ref={scrollRef}
-        accessibilityLabel="Día de cobro"
-        showsVerticalScrollIndicator={false}
-        snapToInterval={WHEEL_ITEM_HEIGHT}
-        decelerationRate="fast"
-        onMomentumScrollEnd={handleMomentumScrollEnd}
-        onScrollEndDrag={handleScrollEnd}
-        contentContainerStyle={{
-          paddingTop: WHEEL_PADDING,
-          paddingBottom: WHEEL_PADDING,
-        }}
-        style={{ height: WHEEL_VISIBLE_HEIGHT }}
-      >
-        {items.map((item, idx) => {
-          const isSelected = idx === currentIndex;
-          return (
-            <View
-              key={item.value}
-              style={[styles.wheelItem, { height: WHEEL_ITEM_HEIGHT }]}
-            >
-              <Text
-                variant={isSelected ? 'h2' : 'body'}
-                weight={isSelected ? 'bold' : 'regular'}
-                style={{
-                  color: isSelected ? palette.accent : palette.textSecondary,
-                  opacity: isSelected ? 1 : 0.45,
-                }}
-              >
-                {item.label}
-              </Text>
-            </View>
-          );
-        })}
-      </ScrollView>
-
-      {/* Degradado inferior */}
-      <LinearGradient
-        pointerEvents="none"
-        colors={['transparent', palette.bgBase] as [string, string]}
-        style={[styles.wheelFadeBottom]}
-      />
-    </View>
-  );
-};
-
 /** Chip de día (mes o semana) para el selector inline. */
 const DayChip: React.FC<{
   label: string;
@@ -1195,51 +1047,6 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: radius.sm,
     borderWidth: 1,
-  },
-  // Wheel Picker
-  wheelContainer: {
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  wheelItem: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  wheelRailTop: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 1,
-    borderTopWidth: 1,
-    zIndex: 2,
-  },
-  wheelRailBottom: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 1,
-    borderTopWidth: 1,
-    zIndex: 2,
-  },
-  wheelFadeTop: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: WHEEL_PADDING,
-    zIndex: 3,
-    pointerEvents: 'none',
-  },
-  wheelFadeBottom: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: WHEEL_PADDING,
-    zIndex: 3,
-    pointerEvents: 'none',
   },
   personalizedBox: {
     padding: spacing.lg,

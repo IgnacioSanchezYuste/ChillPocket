@@ -33,6 +33,8 @@ const SECONDARY: Item[] = [
   { label: 'Metas de ahorro', icon: 'flag', route: 'Goals' },
   { label: 'Categorías', icon: 'pricetags', route: 'Categories' },
 ];
+/** Solo para administradores (`user.is_admin`). */
+const ADMIN: Item[] = [{ label: 'Uso de la app', icon: 'bar-chart', route: 'Usage' }];
 
 export const AppSidebar: React.FC = () => {
   const { palette, mode } = useTheme();
@@ -63,6 +65,15 @@ export const AppSidebar: React.FC = () => {
         {SECONDARY.map((it) => (
           <SidebarItem key={it.route} item={it} active={active === it.route} onPress={() => go(it)} />
         ))}
+
+        {user?.is_admin && (
+          <>
+            <View style={[styles.divider, { backgroundColor: palette.borderSubtle }]} />
+            {ADMIN.map((it) => (
+              <SidebarItem key={it.route} item={it} active={active === it.route} onPress={() => go(it)} />
+            ))}
+          </>
+        )}
       </ScrollView>
 
       <View style={[styles.footer, { borderTopColor: palette.borderSubtle }]}>

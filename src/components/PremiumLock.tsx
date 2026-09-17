@@ -16,6 +16,8 @@ type Props = {
   variant?: 'banner' | 'badge';
   /** Origen del lock para analytics (p.ej. 'export', 'advanced_analytics'). */
   feature?: string;
+  /** Se llama antes de navegar: p. ej. para cerrar el Modal que lo contiene. */
+  onNavigate?: () => void;
 };
 
 /**
@@ -27,12 +29,14 @@ export const PremiumLock: React.FC<Props> = ({
   planLabel = 'Mejorar',
   variant = 'banner',
   feature,
+  onNavigate,
 }) => {
   const { palette } = useTheme();
   const navigation = useNavigation<any>();
 
   const onPress = () => {
     track('upgrade_clicked', { feature, variant });
+    onNavigate?.();
     navigation.navigate('Paywall', { feature });
   };
 

@@ -24,6 +24,7 @@ import { apiError } from '../../api/http';
 import { useToast } from '../../components/Toast';
 import { confirm } from '../../utils/confirm';
 import { filterByBalanceMode } from '../../utils/balanceMode';
+import { track } from '../../utils/analytics';
 import type { Transaction } from '../../api/types';
 import type { TransactionPrefill } from '../modals/TransactionSheet';
 
@@ -64,6 +65,18 @@ export const TransactionsScreen: React.FC = () => {
     const id = setTimeout(() => setSearchDebounced(search.trim()), 250);
     return () => clearTimeout(id);
   }, [search]);
+
+  // Una búsqueda cuenta una vez al empezar a buscar (no por tecla) y vuelve a
+  // contar solo tras vaciar el campo.
+  const searchTrackedRef = useRef(false);
+  useEffect(() => {
+    if (!searchDebounced) {
+      searchTrackedRef.current = false;
+    } else if (!searchTrackedRef.current) {
+      searchTrackedRef.current = true;
+      track('search_used');
+    }
+  }, [searchDebounced]);
 
   // Construye el filtro listo para la API a partir del estado actual.
   // Si el usuario NO ha fijado rango de fechas en filtros avanzados, aplicamos
@@ -214,6 +227,7 @@ export const TransactionsScreen: React.FC = () => {
     if (!ok) return;
     try {
       await transactionsApi.remove(id);
+      track('transaction_deleted');
       useDataStore.getState().refreshAll(true);
       toast.success('Eliminado');
       // Actualiza la lista local de forma optimista sin esperar el store.
@@ -226,6 +240,7 @@ export const TransactionsScreen: React.FC = () => {
   // Abre el sheet de creación con los datos de la transacción original
   // y fecha de hoy (duplicar = "esto mismo, otra vez hoy").
   const handleDuplicateTx = useCallback((tx: Transaction) => {
+    if (tx.transfer) return; // una transferencia no se duplica como gasto normal
     const prefill: TransactionPrefill = {
       amount: String(tx.amount),
       description: tx.description,
@@ -234,7 +249,6 @@ export const TransactionsScreen: React.FC = () => {
       category_id: tx.category_id,
       notes: tx.notes,
       date: todayISO(),
-      scope: tx.scope ?? 'month',
     };
     setEditing(null);
     setDuplicatePrefill(prefill);
@@ -393,14 +407,20 @@ export const TransactionsScreen: React.FC = () => {
         }}
         editing={editing}
         prefill={duplicatePrefill}
-        onSaved={loadFirstPage}
+        onSaved={(created) => {
+          if (created && duplicatePrefill) track('transaction_duplicated');
+          loadFirstPage();
+        }}
       />
 
       <TransactionFiltersSheet
         visible={filtersOpen}
         initial={adv}
         onClose={() => setFiltersOpen(false)}
-        onApply={setAdv}
+        onApply={(next) => {
+          setAdv(next);
+          if (countActiveFilters(next) > 0) track('filters_applied');
+        }}
       />
     </SafeAreaView>
   );

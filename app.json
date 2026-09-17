@@ -36,12 +36,13 @@
         "projectId": "4be735dc-f97f-411b-9cae-6a6b9e10eee7"
       }
     },
-    "owner": "nachonsennn",
+    "owner": "Nacho_06",
     "plugins": [
       "expo-font",
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
       "expo-secure-store",
+      "expo-notifications",
       [
         "expo-image-picker",
         {
